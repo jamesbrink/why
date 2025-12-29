@@ -1,0 +1,33 @@
+# Build artifacts
+/target/
+*.o
+*.a
+*.so
+*.dylib
+
+# Nix
+/result
+.direnv/
+
+# Models (large files tracked via git-lfs)
+# *.gguf is now tracked with git-lfs
+llamafile
+why-embedded
+
+# Logs
+*.log
+
+# Coverage
+/coverage/
+
+# Editor
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.claude/
+.mcp.json
+.envrc
