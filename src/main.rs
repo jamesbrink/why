@@ -197,6 +197,11 @@ fn find_embedded_model() -> Result<EmbeddedModelInfo> {
     let file_len = file.metadata()?.len();
 
     // Try new 25-byte trailer format first (with family byte)
+    // Note: This correctly distinguishes from old 24-byte format because:
+    // - New format: magic is at End(-25), so bytes [0..8] contain "WHYMODEL"
+    // - Old format: magic is at End(-24), so when reading 25 bytes from End(-25),
+    //   the magic would be at bytes [1..9], not [0..8], causing the check to fail
+    //   and fall through to the old format handler below.
     if file_len >= 25 {
         file.seek(SeekFrom::End(-25))?;
         let mut trailer = [0u8; 25];
@@ -281,9 +286,11 @@ fn get_model_path(cli_model: Option<&PathBuf>) -> Result<ModelPathInfo> {
     }
 
     // Fallback: look for model file in current dir or next to exe
+    // Include both old and new model filenames for compatibility
     let candidates = [
         PathBuf::from("model.gguf"),
         PathBuf::from("qwen2.5-coder-0.5b-instruct-q8_0.gguf"),
+        PathBuf::from("qwen2.5-coder-0.5b.gguf"), // Old filename for compatibility
         env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.join("model.gguf")))
@@ -1580,6 +1587,56 @@ mod tests {
         let cli = Cli::parse_from(["why", "-d", "-j", "error"]);
         assert!(cli.debug);
         assert!(cli.json);
+    }
+
+    #[test]
+    fn test_cli_parses_model_flag() {
+        let cli = Cli::parse_from(["why", "--model", "/path/to/model.gguf", "error"]);
+        assert_eq!(cli.model, Some(PathBuf::from("/path/to/model.gguf")));
+    }
+
+    #[test]
+    fn test_cli_parses_short_model_flag() {
+        let cli = Cli::parse_from(["why", "-m", "/path/to/model.gguf", "error"]);
+        assert_eq!(cli.model, Some(PathBuf::from("/path/to/model.gguf")));
+    }
+
+    #[test]
+    fn test_cli_parses_template_flag() {
+        let cli = Cli::parse_from(["why", "--template", "gemma", "error"]);
+        assert_eq!(cli.template, Some(ModelFamily::Gemma));
+    }
+
+    #[test]
+    fn test_cli_parses_short_template_flag() {
+        let cli = Cli::parse_from(["why", "-t", "qwen", "error"]);
+        assert_eq!(cli.template, Some(ModelFamily::Qwen));
+    }
+
+    #[test]
+    fn test_cli_parses_template_smollm() {
+        let cli = Cli::parse_from(["why", "--template", "smollm", "error"]);
+        assert_eq!(cli.template, Some(ModelFamily::Smollm));
+    }
+
+    #[test]
+    fn test_cli_parses_list_models_flag() {
+        let cli = Cli::parse_from(["why", "--list-models"]);
+        assert!(cli.list_models);
+    }
+
+    #[test]
+    fn test_cli_model_and_template_together() {
+        let cli = Cli::parse_from([
+            "why",
+            "--model",
+            "/path/to/gemma.gguf",
+            "--template",
+            "gemma",
+            "error",
+        ]);
+        assert_eq!(cli.model, Some(PathBuf::from("/path/to/gemma.gguf")));
+        assert_eq!(cli.template, Some(ModelFamily::Gemma));
     }
 
     // Tests for extract_section_label guardrail
