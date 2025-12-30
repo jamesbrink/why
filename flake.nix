@@ -27,6 +27,9 @@
         cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
         version = cargoToml.package.version;
 
+        # Git revision for version string (works with dirty trees too)
+        gitRev = self.shortRev or self.dirtyShortRev or "unknown";
+
         # Qwen2.5-Coder 0.5B Instruct GGUF model (Q8_0 quantization)
         qwen-model = pkgs.fetchurl {
           url = "https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-0.5b-instruct-q8_0.gguf";
@@ -80,6 +83,7 @@
 
           # Environment variables for the build
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          WHY_GIT_SHA = gitRev;
 
           # Enable GPU acceleration via cargo features
           buildFeatures = gpuFeatures;

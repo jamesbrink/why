@@ -25,15 +25,19 @@ cargo test test_name
 # Lint
 cargo clippy
 
+# Build + embed model (auto-downloads model if needed)
+build
+
 # Build embedded binary with nix (includes model, ~680MB)
 nix build
 
 # Build CLI only (no model)
 nix build .#why
 
-# Manual embed for development (model auto-downloaded by build script)
-cargo build --release
-./scripts/embed.sh target/release/why qwen2.5-coder-0.5b-instruct-q8_0.gguf why-embedded
+# Run evaluation suite
+python3 scripts/eval.py          # All cases
+python3 scripts/eval.py -d       # Detailed output with markdown
+python3 scripts/eval.py -f rust  # Filter by language
 ```
 
 ## Architecture
@@ -49,11 +53,11 @@ At runtime, `find_embedded_model()` reads the trailer to locate and extract the 
 
 ### Key Components (src/main.rs)
 
-- **CLI parsing**: Uses clap with `--json`, `--debug`, `--completions` flags
+- **CLI parsing**: Uses clap with `--json`, `--debug`, `--stats`, `--completions` flags
 - **Input handling**: Accepts error as args or via stdin pipe
 - **Prompt building**: Uses ChatML format template from `src/prompt.txt`
-- **Inference**: llama-cpp-2 bindings, 2048 context, greedy sampling
-- **Response parsing**: Extracts SUMMARY/EXPLANATION/SUGGESTION sections
+- **Inference**: llama-cpp-2 bindings, 2048 context, temp=0.7 sampling
+- **Response parsing**: Extracts SUMMARY/EXPLANATION/SUGGESTION sections (handles both uppercase and markdown `**Bold:**` formats)
 - **Echo detection**: Catches when model repeats input (indicates non-error input)
 
 ### Response Detection Logic
@@ -64,6 +68,15 @@ At runtime, `find_embedded_model()` reads the trailer to locate and extract the 
 4. Has SUMMARY/EXPLANATION/SUGGESTION → Parse and display
 5. No parseable content → "Could not analyze input"
 
+### GPU Acceleration
+
+Feature flags in Cargo.toml control GPU backend:
+- `metal` - macOS (Apple Silicon/Intel)
+- `vulkan` - Linux (AMD/Intel/NVIDIA)
+- `cuda` - NVIDIA (optional)
+
+The nix flake auto-selects: Metal on Darwin, Vulkan on Linux.
+
 ## Dependencies
 
 Always use the most recent versions of dependencies. Check latest versions with:
@@ -73,4 +86,4 @@ cargo search <crate-name> --limit 1
 
 ## Model
 
-The GGUF model (`qwen2.5-coder-0.5b-instruct-q8_0.gguf`, ~676MB) is fetched from HuggingFace during the nix build.
+The GGUF model (`qwen2.5-coder-0.5b-instruct-q8_0.gguf`, ~676MB) is fetched from HuggingFace during the nix build. For local development, the `build` script auto-downloads it.
