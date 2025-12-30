@@ -23,6 +23,10 @@
         isLinux = pkgs.stdenv.isLinux;
         isAarch64 = pkgs.stdenv.hostPlatform.isAarch64;
 
+        # Read version from Cargo.toml
+        cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+        version = cargoToml.package.version;
+
         # Qwen2.5-Coder GGUF model (tracked via git-lfs)
         qwen-model = ./qwen2.5-coder-0.5b.gguf;
 
@@ -40,7 +44,7 @@
         # Build the why CLI
         why-cli = pkgs.rustPlatform.buildRustPackage {
           pname = "why";
-          version = "0.1.0";
+          inherit version;
 
           src = pkgs.lib.cleanSource ./.;
 
@@ -77,7 +81,7 @@
         # Create the embedded binary with model baked in
         why-embedded = pkgs.stdenv.mkDerivation {
           pname = "why-embedded";
-          version = "0.1.0";
+          inherit version;
 
           # No source needed - we're just combining artifacts
           dontUnpack = true;

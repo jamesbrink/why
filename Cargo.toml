@@ -2,6 +2,14 @@
 name = "why"
 version = "0.1.0"
 edition = "2021"
+authors = ["James Brink <brink.james@gmail.com>"]
+description = "Quick error explanation CLI using local LLM"
+homepage = "https://github.com/jamesbrink/why"
+repository = "https://github.com/jamesbrink/why"
+license = "MIT"
+readme = "README.md"
+keywords = ["cli", "llm", "error-handling", "developer-tools", "ai"]
+categories = ["command-line-utilities", "development-tools"]
 autoexamples = false  # Don't try to compile example error scripts
 
 [dependencies]
