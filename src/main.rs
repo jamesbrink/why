@@ -152,11 +152,15 @@ fn build_prompt(error: &str) -> String {
 fn is_echo_response(input: &str, response: &str) -> bool {
     let response_trimmed = response.trim();
     let input_trimmed = input.trim();
+    let response_lower = response_trimmed.to_lowercase();
 
-    // If response doesn't have our expected structure markers
-    let has_structure = response_trimmed.contains("SUMMARY:")
-        || response_trimmed.contains("EXPLANATION:")
-        || response_trimmed.contains("SUGGESTION:");
+    // If response has our expected structure markers (case-insensitive, with or without markdown)
+    let has_structure = response_lower.contains("summary:")
+        || response_lower.contains("explanation:")
+        || response_lower.contains("suggestion:")
+        || response_lower.contains("**summary")
+        || response_lower.contains("**explanation")
+        || response_lower.contains("**suggestion");
 
     if has_structure {
         return false;
@@ -178,6 +182,48 @@ fn is_echo_response(input: &str, response: &str) -> bool {
     input_lines == response_lines
 }
 
+/// Extract section label from a line, handling various formats:
+/// - "SUMMARY:" or "SUMMARY"
+/// - "**Summary:**" or "**SUMMARY:**"
+/// - "Summary:" (case-insensitive)
+///
+/// Returns (section_name, rest_of_line) if a label is found.
+fn extract_section_label(line: &str) -> Option<(&'static str, String)> {
+    // Strip markdown bold markers if present
+    let cleaned = line.trim_start_matches("**").trim_start_matches('*');
+    let cleaned_lower = cleaned.to_lowercase();
+
+    for (label, section) in [
+        ("summary", "summary"),
+        ("explanation", "explanation"),
+        ("suggestion", "suggestion"),
+    ] {
+        // Check for "label:" or "label" at start
+        if cleaned_lower.starts_with(label) {
+            let after_label = &cleaned[label.len()..];
+            // Must be followed by ":", "**:", or end of string
+            let rest = if let Some(stripped) = after_label.strip_prefix(':') {
+                stripped.trim_start_matches("**").trim()
+            } else if let Some(stripped) = after_label.strip_prefix("**:") {
+                stripped.trim()
+            } else if after_label.is_empty()
+                || after_label.starts_with("**")
+                || after_label
+                    .chars()
+                    .next()
+                    .map(|c| c.is_whitespace())
+                    .unwrap_or(false)
+            {
+                after_label.trim_start_matches("**").trim()
+            } else {
+                continue;
+            };
+            return Some((section, rest.to_string()));
+        }
+    }
+    None
+}
+
 fn parse_response(error: &str, response: &str) -> ErrorExplanation {
     let mut summary = String::new();
     let mut explanation = String::new();
@@ -187,36 +233,17 @@ fn parse_response(error: &str, response: &str) -> ErrorExplanation {
     for line in response.lines() {
         let line = line.trim();
 
-        // Check for section headers (with or without the text after colon on same line)
-        if line.starts_with("SUMMARY:") || line == "SUMMARY" {
-            current_section = "summary";
-            let rest = line
-                .strip_prefix("SUMMARY:")
-                .or_else(|| line.strip_prefix("SUMMARY"))
-                .unwrap_or("")
-                .trim();
+        // Check for section headers using flexible matching
+        if let Some((section, rest)) = extract_section_label(line) {
+            current_section = section;
+            let target = match section {
+                "summary" => &mut summary,
+                "explanation" => &mut explanation,
+                "suggestion" => &mut suggestion,
+                _ => &mut summary,
+            };
             if !rest.is_empty() {
-                summary = rest.to_string();
-            }
-        } else if line.starts_with("EXPLANATION:") || line == "EXPLANATION" {
-            current_section = "explanation";
-            let rest = line
-                .strip_prefix("EXPLANATION:")
-                .or_else(|| line.strip_prefix("EXPLANATION"))
-                .unwrap_or("")
-                .trim();
-            if !rest.is_empty() {
-                explanation = rest.to_string();
-            }
-        } else if line.starts_with("SUGGESTION:") || line == "SUGGESTION" {
-            current_section = "suggestion";
-            let rest = line
-                .strip_prefix("SUGGESTION:")
-                .or_else(|| line.strip_prefix("SUGGESTION"))
-                .unwrap_or("")
-                .trim();
-            if !rest.is_empty() {
-                suggestion = rest.to_string();
+                *target = rest;
             }
         } else if !line.is_empty() {
             let target = match current_section {
@@ -827,5 +854,116 @@ mod tests {
         let cli = Cli::parse_from(["why", "-d", "-j", "error"]);
         assert!(cli.debug);
         assert!(cli.json);
+    }
+
+    // Tests for extract_section_label guardrail
+    #[test]
+    fn test_extract_section_label_uppercase() {
+        let (section, rest) = extract_section_label("SUMMARY: This is a summary").unwrap();
+        assert_eq!(section, "summary");
+        assert_eq!(rest, "This is a summary");
+    }
+
+    #[test]
+    fn test_extract_section_label_lowercase() {
+        let (section, rest) = extract_section_label("summary: This is a summary").unwrap();
+        assert_eq!(section, "summary");
+        assert_eq!(rest, "This is a summary");
+    }
+
+    #[test]
+    fn test_extract_section_label_mixed_case() {
+        let (section, rest) = extract_section_label("Summary: This is a summary").unwrap();
+        assert_eq!(section, "summary");
+        assert_eq!(rest, "This is a summary");
+    }
+
+    #[test]
+    fn test_extract_section_label_markdown_bold() {
+        let (section, rest) = extract_section_label("**Summary:** This is a summary").unwrap();
+        assert_eq!(section, "summary");
+        assert_eq!(rest, "This is a summary");
+    }
+
+    #[test]
+    fn test_extract_section_label_markdown_bold_uppercase() {
+        let (section, rest) = extract_section_label("**SUMMARY:** This is a summary").unwrap();
+        assert_eq!(section, "summary");
+        assert_eq!(rest, "This is a summary");
+    }
+
+    #[test]
+    fn test_extract_section_label_explanation_markdown() {
+        let (section, rest) = extract_section_label("**Explanation:** The error occurs").unwrap();
+        assert_eq!(section, "explanation");
+        assert_eq!(rest, "The error occurs");
+    }
+
+    #[test]
+    fn test_extract_section_label_suggestion_markdown() {
+        let (section, rest) = extract_section_label("**Suggestion:** Fix the code").unwrap();
+        assert_eq!(section, "suggestion");
+        assert_eq!(rest, "Fix the code");
+    }
+
+    #[test]
+    fn test_extract_section_label_no_content() {
+        let (section, rest) = extract_section_label("SUMMARY:").unwrap();
+        assert_eq!(section, "summary");
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn test_extract_section_label_just_label() {
+        let (section, rest) = extract_section_label("EXPLANATION").unwrap();
+        assert_eq!(section, "explanation");
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn test_extract_section_label_not_a_section() {
+        assert!(extract_section_label("This is just regular text").is_none());
+        assert!(extract_section_label("summarizing the results").is_none());
+        assert!(extract_section_label("explanatory note").is_none());
+    }
+
+    #[test]
+    fn test_parse_response_markdown_format() {
+        let response = "**Summary:** The error is a TypeError.\n\
+            **Explanation:** You tried to access a property on undefined.\n\
+            **Suggestion:** Check if the object exists first.";
+
+        let result = parse_response("TypeError", response);
+
+        assert_eq!(result.summary, "The error is a TypeError.");
+        assert!(result.explanation.contains("access a property"));
+        assert!(result.suggestion.contains("Check if the object"));
+    }
+
+    #[test]
+    fn test_parse_response_mixed_formats() {
+        // Model might mix formats within a response
+        let response = "**Summary:** Mixed format test.\n\
+            EXPLANATION: Using uppercase here.\n\
+            **Suggestion:** And back to markdown.";
+
+        let result = parse_response("error", response);
+
+        assert_eq!(result.summary, "Mixed format test.");
+        assert!(result.explanation.contains("uppercase"));
+        assert!(result.suggestion.contains("back to markdown"));
+    }
+
+    #[test]
+    fn test_parse_response_case_insensitive() {
+        let response = "summary: lowercase labels work.\n\
+            explanation: this should parse correctly.\n\
+            suggestion: and so should this.";
+
+        let result = parse_response("error", response);
+
+        assert!(result.summary.contains("lowercase labels"));
+        assert!(result.explanation.contains("parse correctly"));
+        assert!(result.suggestion.contains("so should this"));
     }
 }

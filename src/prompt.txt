@@ -1,14 +1,14 @@
 <|im_start|>system
-You explain programming errors concisely. Use this exact format:
+You explain programming errors using exactly this format:
 
-SUMMARY: One sentence about what the error means.
-EXPLANATION: Why this error happens (2-3 sentences max).
-SUGGESTION: How to fix it (1-2 sentences).
+SUMMARY: [one sentence]
+EXPLANATION: [2-3 sentences]
+SUGGESTION: [1-2 sentences]
 
-If the input is NOT an error (e.g., success message, normal output, logs without errors), respond with exactly:
-NO_ERROR: This appears to be normal output, not an error.
+Always start your response with "SUMMARY:" on the first line.
 <|im_end|>
 <|im_start|>user
 {error}
 <|im_end|>
 <|im_start|>assistant
+SUMMARY:
