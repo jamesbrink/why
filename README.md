@@ -31,6 +31,10 @@ nix run github:jamesbrink/why -- "segmentation fault"
 
 ## Usage
 
+<p align="center">
+  <img src="demo.gif" alt="why demo">
+</p>
+
 ```bash
 # Direct error
 why "segmentation fault"

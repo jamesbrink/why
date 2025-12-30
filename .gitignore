@@ -29,5 +29,8 @@ why-embedded
 # OS
 .DS_Store
 
+# Recordings
+*.cast
+
 # Claude local settings (user-specific)
 .claude/settings.local.json
