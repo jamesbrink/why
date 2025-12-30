@@ -347,7 +347,7 @@ fn run_inference(model_path: &PathBuf, prompt: &str) -> Result<String> {
     Ok(output)
 }
 
-fn can_generate_more(start_n: usize, n_cur: usize, max_gen_tokens: usize) -> bool {
+fn can_generate_more(start_n: i32, n_cur: i32, max_gen_tokens: i32) -> bool {
     n_cur.saturating_sub(start_n) < max_gen_tokens
 }
 
