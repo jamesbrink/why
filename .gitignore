@@ -28,6 +28,6 @@ why-embedded
 
 # OS
 .DS_Store
-.claude/
-.mcp.json
-.envrc
+
+# Claude local settings (user-specific)
+.claude/settings.local.json
