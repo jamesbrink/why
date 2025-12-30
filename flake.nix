@@ -126,6 +126,19 @@
           };
         };
 
+        # Helper script to run full build (debug + release with embedded model)
+        buildScript = pkgs.writeShellScriptBin "build" ''
+          set -euo pipefail
+          echo "Building debug binary..."
+          cargo build
+          echo ""
+          echo "Building release binary..."
+          cargo build --release
+          echo ""
+          echo "Embedding model..."
+          ./scripts/embed.sh target/release/why qwen2.5-coder-0.5b.gguf why-embedded
+        '';
+
       in
       {
         # Default package is the embedded version
@@ -155,6 +168,9 @@
             pkg-config
             openssl
             cmake
+
+            # Helper scripts
+            buildScript
           ] ++ (if isDarwin then [
             # macOS specific - new SDK provides frameworks and libiconv
             apple-sdk_15
