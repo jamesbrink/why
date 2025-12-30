@@ -10,14 +10,22 @@ No API keys. No internet. No patience required.
 
 ![why demo](why.gif)
 
+## Quick Start
+
+```bash
+# Run directly from GitHub (no install needed)
+nix run github:jamesbrink/why -- "segmentation fault"
+```
+
 ## Usage
 
 ```bash
 # Direct error
 why "segmentation fault"
 
-# Pipe your failures directly
+# Pipe your failures (use 2>&1 to capture stderr)
 cargo build 2>&1 | why
+python script.py 2>&1 | why
 
 # For the robots
 why --json "null pointer exception"
