@@ -15,7 +15,15 @@ No API keys. No internet. No patience required.
 ## Quick Start
 
 ```bash
-# Run directly from GitHub (no install needed)
+# Install it (one command, no wizardry required)
+curl -sSfL https://raw.githubusercontent.com/jamesbrink/why/main/install.sh | sh
+
+# Now yell at your errors
+why "segmentation fault"
+```
+
+Already have Nix? You can skip the install entirely:
+```bash
 nix run github:jamesbrink/why -- "segmentation fault"
 ```
 

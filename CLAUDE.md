@@ -64,6 +64,13 @@ At runtime, `find_embedded_model()` reads the trailer to locate and extract the 
 4. Has SUMMARY/EXPLANATION/SUGGESTION → Parse and display
 5. No parseable content → "Could not analyze input"
 
+## Dependencies
+
+Always use the most recent versions of dependencies. Check latest versions with:
+```bash
+cargo search <crate-name> --limit 1
+```
+
 ## Model
 
 The GGUF model (`qwen2.5-coder-0.5b-instruct-q8_0.gguf`, ~676MB) is fetched from HuggingFace during the nix build.

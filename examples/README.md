@@ -2,7 +2,35 @@
 
 These scripts produce various error messages that can be analyzed with `why`.
 
-## Usage
+## Evaluation
+
+The primary eval dataset is in `eval/errors.csv` with 76+ error cases across many languages.
+
+```bash
+# Run all CSV cases
+./scripts/eval.py
+
+# Detailed output with markdown rendering
+./scripts/eval.py -d
+
+# Filter by language
+./scripts/eval.py -f python
+./scripts/eval.py -f nix -d
+
+# Run specific case with details
+./scripts/eval.py --id rust_borrow -d
+
+# Limit number of cases
+./scripts/eval.py --limit 10
+
+# JSON output for scripting
+./scripts/eval.py --json
+
+# Use specific binary
+./scripts/eval.py -b ./target/release/why
+```
+
+## Manual Usage
 
 Run a script and pipe its stderr to `why`:
 

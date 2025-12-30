@@ -1,0 +1,188 @@
+id,language,error_type,error_text
+python_attr_error,Python,AttributeError,"Traceback (most recent call last):
+  File ""example.py"", line 18, in process
+    return DataProcessor.value
+AttributeError: 'NoneType' object has no attribute 'get'"
+python_key_error,Python,KeyError,"Traceback (most recent call last):
+  File ""api.py"", line 12, in parse_api_response
+    ""name"": user[""username""],
+KeyError: 'username'"
+python_recursion,Python,RecursionError,"Traceback (most recent call last):
+  File ""math.py"", line 7, in fibonacci
+    return fibonacci(n - 1) + fibonacci(n - 2)
+  [Previous line repeated 996 more times]
+RecursionError: maximum recursion depth exceeded"
+python_import,Python,ModuleNotFoundError,"Traceback (most recent call last):
+  File ""app.py"", line 2, in <module>
+    from circular_dependency import helper
+ModuleNotFoundError: No module named 'circular_dependency'"
+python_type_error,Python,TypeError,"Traceback (most recent call last):
+  File ""calc.py"", line 5, in add
+    return a + b
+TypeError: unsupported operand type(s) for +: 'int' and 'str'"
+python_value_error,Python,ValueError,"Traceback (most recent call last):
+  File ""parse.py"", line 3, in parse_int
+    return int(value)
+ValueError: invalid literal for int() with base 10: 'hello'"
+python_index_error,Python,IndexError,"Traceback (most recent call last):
+  File ""list.py"", line 4, in get_item
+    return items[10]
+IndexError: list index out of range"
+python_zero_division,Python,ZeroDivisionError,"Traceback (most recent call last):
+  File ""math.py"", line 3, in divide
+    return a / b
+ZeroDivisionError: division by zero"
+python_file_not_found,Python,FileNotFoundError,"Traceback (most recent call last):
+  File ""io.py"", line 2, in read_file
+    with open('missing.txt') as f:
+FileNotFoundError: [Errno 2] No such file or directory: 'missing.txt'"
+python_permission_error,Python,PermissionError,"Traceback (most recent call last):
+  File ""io.py"", line 2, in write_file
+    with open('/etc/passwd', 'w') as f:
+PermissionError: [Errno 13] Permission denied: '/etc/passwd'"
+bash_unbound,Bash,UnboundVariable,"script.sh: line 9: DATABASE_URL: unbound variable"
+bash_command_not_found,Bash,CommandNotFound,"script.sh: line 7: systemclt: command not found"
+bash_syntax_error,Bash,SyntaxError,"script.sh: line 5: syntax error near unexpected token `fi'"
+bash_permission_denied,Bash,PermissionDenied,"-bash: ./script.sh: Permission denied"
+bash_no_such_file,Bash,NoSuchFile,"bash: /path/to/script.sh: No such file or directory"
+js_undefined,JavaScript,TypeError,"TypeError: Cannot read properties of undefined (reading 'theme')
+    at getUserTheme (app.js:14:34)
+    at displayDashboard (app.js:18:19)"
+js_null,JavaScript,TypeError,"TypeError: Cannot read properties of null (reading 'map')
+    at processData (data.js:5:15)"
+js_not_a_function,JavaScript,TypeError,"TypeError: callback is not a function
+    at fetchData (api.js:10:5)"
+js_reference_error,JavaScript,ReferenceError,"ReferenceError: undefinedVariable is not defined
+    at main (app.js:3:5)"
+js_syntax_error,JavaScript,SyntaxError,"SyntaxError: Unexpected token '}' at line 15"
+js_range_error,JavaScript,RangeError,"RangeError: Maximum call stack size exceeded"
+ruby_nil_error,Ruby,NoMethodError,"example.rb:23:in `get_user_email': undefined method `email' for nil:NilClass (NoMethodError)
+	from example.rb:28:in `<main>'"
+ruby_name_error,Ruby,NameError,"NameError: undefined local variable or method `user' for main:Object"
+ruby_argument_error,Ruby,ArgumentError,"ArgumentError: wrong number of arguments (given 2, expected 1)"
+ruby_load_error,Ruby,LoadError,"LoadError: cannot load such file -- missing_gem"
+go_nil_panic,Go,NilPointerPanic,"panic: runtime error: invalid memory address or nil pointer dereference
+[signal SIGSEGV: segmentation violation code=0x2 addr=0x0 pc=0x102e92bf8]
+
+goroutine 1 [running]:
+main.(*App).Connect(0x1400011af30)
+	/app/main.go:23 +0x28"
+go_index_panic,Go,IndexOutOfRange,"panic: runtime error: index out of range [5] with length 3
+
+goroutine 1 [running]:
+main.main()
+	/app/main.go:8 +0x1c"
+go_type_assertion,Go,TypeAssertionPanic,"panic: interface conversion: interface {} is string, not int"
+go_deadlock,Go,Deadlock,"fatal error: all goroutines are asleep - deadlock!"
+rust_borrow,Rust,BorrowChecker,"error[E0382]: borrow of moved value: `data`
+  --> src/main.rs:10:37
+   |
+ 4 |     let data = vec![1, 2, 3, 4, 5];
+   |         ---- move occurs because `data` has type `Vec<i32>`, which does not implement the `Copy` trait
+ 7 |     let processed = process_data(data);
+   |                                  ---- value moved here
+10 |     println!(""Original length: {}"", data.len());
+   |                                     ^^^^ value borrowed here after move"
+rust_lifetime,Rust,LifetimeError,"error[E0106]: missing lifetime specifier
+ --> src/lib.rs:5:16
+  |
+5 | fn longest(x: &str, y: &str) -> &str {
+  |               ----     ----     ^ expected named lifetime parameter"
+rust_type_mismatch,Rust,TypeMismatch,"error[E0308]: mismatched types
+ --> src/main.rs:3:20
+  |
+3 |     let x: i32 = ""hello"";
+  |            ---   ^^^^^^^ expected `i32`, found `&str`"
+rust_trait_bound,Rust,TraitBound,"error[E0277]: the trait bound `MyStruct: std::fmt::Display` is not satisfied
+ --> src/main.rs:5:20
+  |
+5 |     println!(""{}"", my_struct);
+  |                    ^^^^^^^^^ `MyStruct` cannot be formatted with the default formatter"
+c_segfault,C,SegmentationFault,"Segmentation fault (core dumped)"
+c_double_free,C,DoubleFree,"free(): double free detected in tcache 2
+Aborted (core dumped)"
+c_buffer_overflow,C,BufferOverflow,"*** stack smashing detected ***: terminated
+Aborted (core dumped)"
+java_npe,Java,NullPointerException,"Exception in thread ""main"" java.lang.NullPointerException: Cannot invoke method on null object
+	at com.example.Main.getUserCity(Main.java:31)
+	at com.example.Main.main(Main.java:37)"
+java_class_cast,Java,ClassCastException,"Exception in thread ""main"" java.lang.ClassCastException: class java.lang.String cannot be cast to class java.lang.Integer"
+java_array_index,Java,ArrayIndexOutOfBoundsException,"Exception in thread ""main"" java.lang.ArrayIndexOutOfBoundsException: Index 10 out of bounds for length 5"
+java_class_not_found,Java,ClassNotFoundException,"Exception in thread ""main"" java.lang.ClassNotFoundException: com.missing.MyClass"
+typescript_null,TypeScript,TypeErrorNull,"error TS2345: Argument of type 'User | null' is not assignable to parameter of type 'User'.
+  Type 'null' is not assignable to type 'User'."
+typescript_property,TypeScript,PropertyMissing,"error TS2339: Property 'email' does not exist on type 'User'."
+typescript_type_mismatch,TypeScript,TypeMismatch,"error TS2322: Type 'string' is not assignable to type 'number'."
+nix_undefined_var,Nix,UndefinedVariable,"error: undefined variable 'pkgss'
+       at /etc/nixos/configuration.nix:15:5:
+           14|   environment.systemPackages = with pkgs; [
+           15|     pkgss.vim
+              |     ^
+           16|   ];"
+nix_missing_attr,Nix,MissingAttribute,"error: attribute 'vimm' missing
+       at /etc/nixos/configuration.nix:15:5:
+           14|   environment.systemPackages = with pkgs; [
+           15|     pkgs.vimm
+              |     ^
+           16|   ];"
+nix_infinite_recursion,Nix,InfiniteRecursion,"error: infinite recursion encountered
+       at /nix/store/.../lib/modules.nix:500:28:
+          499|         # Type-check the remaining definitions
+          500|           builtins.addErrorContext ""while evaluating the attribute '${key}'""
+              |                            ^"
+nix_type_error,Nix,TypeError,"error: value is a string while a set was expected
+       at /etc/nixos/configuration.nix:10:5:
+            9|   services.nginx = {
+           10|     enable = ""yes"";
+              |     ^
+           11|   };"
+nix_syntax_error,Nix,SyntaxError,"error: syntax error, unexpected ';', expecting ')'
+       at /etc/nixos/configuration.nix:5:10:
+            4|   let
+            5|     foo = bar;
+              |          ^
+            6|   in"
+nix_hash_mismatch,Nix,HashMismatch,"error: hash mismatch in fixed-output derivation '/nix/store/...-source':
+         specified: sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+            got:    sha256-xyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ab="
+nix_build_failed,Nix,BuildFailed,"error: builder for '/nix/store/...-my-package.drv' failed with exit code 1
+       last 10 log lines:
+       > configure: error: C compiler cannot create executables"
+nix_collision,Nix,FileCollision,"error: collision between `/nix/store/...-package-a/bin/app' and `/nix/store/...-package-b/bin/app'"
+nix_flake_not_found,Nix,FlakeNotFound,"error: cannot find flake 'github:nonexistent/repo' in the flake registries"
+nix_eval_error,Nix,EvaluationError,"error: evaluation aborted with the following error message: 'Option services.unknownService does not exist'"
+sql_syntax,SQL,SyntaxError,"ERROR 1064 (42000): You have an error in your SQL syntax; check the manual near 'FORM users WHERE id = 1' at line 1"
+sql_column_not_found,SQL,ColumnNotFound,"ERROR 1054 (42S22): Unknown column 'emial' in 'field list'"
+sql_duplicate_key,SQL,DuplicateKey,"ERROR 1062 (23000): Duplicate entry 'user@example.com' for key 'users.email'"
+sql_foreign_key,SQL,ForeignKeyViolation,"ERROR 1452 (23000): Cannot add or update a child row: a foreign key constraint fails"
+docker_image_not_found,Docker,ImageNotFound,"docker: Error response from daemon: pull access denied for myapp, repository does not exist or may require 'docker login'"
+docker_port_in_use,Docker,PortInUse,"docker: Error response from daemon: driver failed programming external connectivity: Bind for 0.0.0.0:3000 failed: port is already allocated"
+docker_no_space,Docker,NoSpace,"docker: Error response from daemon: no space left on device"
+git_merge_conflict,Git,MergeConflict,"CONFLICT (content): Merge conflict in src/main.rs
+Automatic merge failed; fix conflicts and then commit the result."
+git_not_a_repo,Git,NotARepository,"fatal: not a git repository (or any of the parent directories): .git"
+git_branch_not_found,Git,BranchNotFound,"error: pathspec 'feature-xyz' did not match any file(s) known to git"
+npm_enoent,npm,ENOENT,"npm ERR! enoent ENOENT: no such file or directory, open '/app/package.json'"
+npm_peer_dep,npm,PeerDependency,"npm ERR! ERESOLVE unable to resolve dependency tree
+npm ERR! peer dep missing: react@^18.0.0, required by react-dom@18.2.0"
+cargo_version,Cargo,VersionConflict,"error: failed to select a version for `serde`.
+    ... required by package `my-app v0.1.0`
+versions that meet the requirements `^2.0` are: 2.0.0
+all possible versions conflict with previously selected packages."
+make_error,Make,Error,"make: *** [Makefile:15: build] Error 1"
+cmake_not_found,CMake,PackageNotFound,"CMake Error at CMakeLists.txt:10 (find_package):
+  By not providing ""FindOpenSSL.cmake"" in CMAKE_MODULE_PATH this project has asked CMake to find a package configuration file provided by ""OpenSSL"", but CMake did not find one."
+gcc_undefined_ref,GCC,UndefinedReference,"/usr/bin/ld: main.o: in function `main':
+main.c:(.text+0x15): undefined reference to `missing_function'
+collect2: error: ld returned 1 exit status"
+gcc_implicit_decl,GCC,ImplicitDeclaration,"main.c:5:5: warning: implicit declaration of function 'printf' [-Wimplicit-function-declaration]"
+curl_connection_refused,curl,ConnectionRefused,"curl: (7) Failed to connect to localhost port 8080: Connection refused"
+curl_ssl_error,curl,SSLError,"curl: (60) SSL certificate problem: unable to get local issuer certificate"
+ssh_permission_denied,SSH,PermissionDenied,"Permission denied (publickey,gssapi-keyex,gssapi-with-mic)."
+ssh_host_key,SSH,HostKeyVerification,"@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+kubernetes_crashloop,Kubernetes,CrashLoopBackOff,"Error from server: container ""app"" in pod ""my-pod"" is waiting to start: CrashLoopBackOff"
+kubernetes_oom,Kubernetes,OOMKilled,"Last State: Terminated
+    Reason: OOMKilled
+    Exit Code: 137"

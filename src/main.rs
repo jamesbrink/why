@@ -381,29 +381,131 @@ fn parse_response(error: &str, response: &str) -> ErrorExplanation {
     }
 }
 
+/// Render markdown text to terminal with colored output.
+/// Handles inline code (`code`), code blocks (```), bold (**), and italic (*).
+fn render_markdown(text: &str, width: usize, indent: &str) {
+    let mut in_code_block = false;
+    let mut code_block_content: Vec<String> = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+
+        // Handle code block delimiters
+        if trimmed.starts_with("```") {
+            if in_code_block {
+                // End of code block - print accumulated content
+                for code_line in &code_block_content {
+                    println!("{indent}  {}", code_line.cyan());
+                }
+                code_block_content.clear();
+                in_code_block = false;
+            } else {
+                // Start of code block
+                in_code_block = true;
+            }
+            continue;
+        }
+
+        if in_code_block {
+            code_block_content.push(line.to_string());
+            continue;
+        }
+
+        // Process inline markdown for regular text
+        let processed = render_inline_markdown(line);
+
+        // Wrap and print
+        for wrapped_line in textwrap::wrap(&processed, width.saturating_sub(indent.len())) {
+            println!("{indent}{wrapped_line}");
+        }
+    }
+
+    // Handle unclosed code block
+    if in_code_block {
+        for code_line in &code_block_content {
+            println!("{indent}  {}", code_line.cyan());
+        }
+    }
+}
+
+/// Process inline markdown: `code`, **bold**, *italic*
+fn render_inline_markdown(text: &str) -> String {
+    let mut result = String::new();
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '`' {
+            // Inline code
+            let mut code = String::new();
+            while let Some(&next) = chars.peek() {
+                if next == '`' {
+                    chars.next();
+                    break;
+                }
+                code.push(chars.next().unwrap());
+            }
+            result.push_str(&code.cyan().to_string());
+        } else if c == '*' {
+            if chars.peek() == Some(&'*') {
+                // Bold
+                chars.next();
+                let mut bold_text = String::new();
+                while let Some(&next) = chars.peek() {
+                    if next == '*' {
+                        chars.next();
+                        if chars.peek() == Some(&'*') {
+                            chars.next();
+                        }
+                        break;
+                    }
+                    bold_text.push(chars.next().unwrap());
+                }
+                result.push_str(&bold_text.bold().to_string());
+            } else {
+                // Italic
+                let mut italic_text = String::new();
+                while let Some(&next) = chars.peek() {
+                    if next == '*' {
+                        chars.next();
+                        break;
+                    }
+                    italic_text.push(chars.next().unwrap());
+                }
+                result.push_str(&italic_text.italic().to_string());
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
 fn print_colored(result: &ErrorExplanation) {
+    // Get terminal width, default to 80
+    let width = textwrap::termwidth().min(100);
+
     println!();
     println!("{} {}", "●".red(), result.error.bold());
     println!();
 
     if !result.summary.is_empty() {
-        println!("{}", result.summary.white().bold());
+        let processed = render_inline_markdown(&result.summary);
+        for line in textwrap::wrap(&processed, width) {
+            println!("{}", line.white().bold());
+        }
         println!();
     }
 
     if !result.explanation.is_empty() {
         println!("{} {}", "▸".blue(), "Explanation".blue().bold());
-        for line in textwrap::wrap(&result.explanation, 76) {
-            println!("  {line}");
-        }
+        render_markdown(&result.explanation, width, "  ");
         println!();
     }
 
     if !result.suggestion.is_empty() {
         println!("{} {}", "▸".green(), "Suggestion".green().bold());
-        for line in textwrap::wrap(&result.suggestion, 76) {
-            println!("  {line}");
-        }
+        render_markdown(&result.suggestion, width, "  ");
         println!();
     }
 }
