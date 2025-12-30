@@ -16,6 +16,7 @@ use std::fs::File;
 use std::io::{self, BufRead, IsTerminal, Read, Seek, SeekFrom};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
+use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Magic marker written before embedded model
@@ -40,6 +41,10 @@ struct Cli {
     #[arg(long, short = 'd')]
     debug: bool,
 
+    /// Show performance stats
+    #[arg(long)]
+    stats: bool,
+
     /// Generate shell completions
     #[arg(long, value_enum, value_name = "SHELL")]
     completions: Option<Shell>,
@@ -53,6 +58,20 @@ struct ErrorExplanation {
     suggestion: String,
 }
 
+#[derive(Debug, Serialize)]
+struct InferenceStats {
+    backend: String,
+    prompt_tokens: usize,
+    generated_tokens: usize,
+    total_tokens: usize,
+    model_load_ms: u128,
+    prompt_eval_ms: u128,
+    generation_ms: u128,
+    total_ms: u128,
+    gen_tok_per_s: f64,
+    total_tok_per_s: f64,
+}
+
 fn format_error(message: &str, tip: Option<&str>) -> String {
     let mut output = format!("{} {}", "Error:".red().bold(), message);
     if let Some(tip) = tip {
@@ -60,6 +79,70 @@ fn format_error(message: &str, tip: Option<&str>) -> String {
         output.push_str(&format!("{} {}", "Tip:".blue().bold(), tip));
     }
     output
+}
+
+fn print_debug_section(title: &str, body: &str, footer: Option<String>) {
+    eprintln!("{}", format!("=== DEBUG: {title} ===").yellow().bold());
+    if body.trim().is_empty() {
+        eprintln!("{}", "| <empty>".dimmed());
+    } else {
+        for line in body.lines() {
+            eprintln!("{}", format!("| {line}").bright_white());
+        }
+    }
+    if let Some(footer) = footer {
+        eprintln!("{}", footer.dimmed());
+    }
+    eprintln!();
+}
+
+fn backend_mode() -> &'static str {
+    if cfg!(feature = "metal") {
+        "metal"
+    } else if cfg!(feature = "cuda") {
+        "cuda"
+    } else if cfg!(feature = "vulkan") {
+        "vulkan"
+    } else {
+        "cpu"
+    }
+}
+
+fn print_stats(stats: &InferenceStats) {
+    println!("{} {}", "▸".magenta(), "Stats".magenta().bold());
+    println!(
+        "  {} {}",
+        "Backend:".blue().bold(),
+        stats.backend.bright_white()
+    );
+    println!(
+        "  {} {}",
+        "Tokens:".blue().bold(),
+        format!(
+            "prompt {}, generated {}, total {}",
+            stats.prompt_tokens, stats.generated_tokens, stats.total_tokens
+        )
+        .bright_white()
+    );
+    println!(
+        "  {} {}",
+        "Timing:".blue().bold(),
+        format!(
+            "model {} ms, prompt {} ms, gen {} ms, total {} ms",
+            stats.model_load_ms, stats.prompt_eval_ms, stats.generation_ms, stats.total_ms
+        )
+        .bright_white()
+    );
+    println!(
+        "  {} {}",
+        "Speed:".blue().bold(),
+        format!(
+            "gen {:.1} tok/s, total {:.1} tok/s",
+            stats.gen_tok_per_s, stats.total_tok_per_s
+        )
+        .bright_white()
+    );
+    println!();
 }
 
 fn find_embedded_model() -> Result<(u64, u64)> {
@@ -320,10 +403,12 @@ fn print_colored(result: &ErrorExplanation) {
     }
 }
 
-fn run_inference(model_path: &PathBuf, prompt: &str) -> Result<String> {
+fn run_inference(model_path: &PathBuf, prompt: &str) -> Result<(String, InferenceStats)> {
+    let total_start = Instant::now();
     let backend = LlamaBackend::init()?;
 
     let model_params = LlamaModelParams::default().with_n_gpu_layers(1000);
+    let model_load_start = Instant::now();
     let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
         .with_context(|| "Failed to load model")?;
 
@@ -332,7 +417,9 @@ fn run_inference(model_path: &PathBuf, prompt: &str) -> Result<String> {
     let mut ctx = model
         .new_context(&backend, ctx_params)
         .with_context(|| "Failed to create context")?;
+    let model_load_ms = model_load_start.elapsed().as_millis();
 
+    let prompt_eval_start = Instant::now();
     let mut tokens = model
         .str_to_token(prompt, AddBos::Always)
         .with_context(|| "Failed to tokenize")?;
@@ -362,6 +449,7 @@ fn run_inference(model_path: &PathBuf, prompt: &str) -> Result<String> {
     }
 
     ctx.decode(&mut batch)?;
+    let prompt_eval_ms = prompt_eval_start.elapsed().as_millis();
 
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -381,6 +469,7 @@ fn run_inference(model_path: &PathBuf, prompt: &str) -> Result<String> {
     let start_n = n_cur;
     let mut output = String::new();
 
+    let generation_start = Instant::now();
     while can_generate_more(start_n, n_cur, max_gen_tokens) {
         let token = sampler.sample(&ctx, batch.n_tokens() - 1);
         sampler.accept(token);
@@ -400,7 +489,37 @@ fn run_inference(model_path: &PathBuf, prompt: &str) -> Result<String> {
         n_cur += 1;
     }
 
-    Ok(output)
+    let generation_ms = generation_start.elapsed().as_millis();
+    let total_ms = total_start.elapsed().as_millis();
+    let prompt_tokens = tokens.len();
+    let generated_tokens = (n_cur - start_n).max(0) as usize;
+    let total_tokens = prompt_tokens + generated_tokens;
+    let gen_tok_per_s = if generation_ms == 0 {
+        0.0
+    } else {
+        (generated_tokens as f64) / (generation_ms as f64 / 1000.0)
+    };
+    let total_tok_per_s = if total_ms == 0 {
+        0.0
+    } else {
+        (total_tokens as f64) / (total_ms as f64 / 1000.0)
+    };
+
+    Ok((
+        output,
+        InferenceStats {
+            backend: backend_mode().to_string(),
+            prompt_tokens,
+            generated_tokens,
+            total_tokens,
+            model_load_ms,
+            prompt_eval_ms,
+            generation_ms,
+            total_ms,
+            gen_tok_per_s,
+            total_tok_per_s,
+        },
+    ))
 }
 
 fn can_generate_more(start_n: i32, n_cur: i32, max_gen_tokens: i32) -> bool {
@@ -429,34 +548,51 @@ fn main() -> Result<()> {
     let prompt = build_prompt(&input);
 
     if cli.debug {
-        eprintln!("{}", "=== DEBUG: Input ===".yellow().bold());
-        eprintln!("{input}");
-        eprintln!(
-            "{}",
-            format!("({} chars, {} lines)", input.len(), input.lines().count()).dimmed()
+        print_debug_section(
+            "Input",
+            &input,
+            Some(format!(
+                "({} chars, {} lines)",
+                input.len(),
+                input.lines().count()
+            )),
         );
-        eprintln!();
-        eprintln!("{}", "=== DEBUG: Prompt ===".yellow().bold());
-        eprintln!("{prompt}");
-        eprintln!("{}", format!("({} chars)", prompt.len()).dimmed());
+        print_debug_section("Prompt", &prompt, Some(format!("({} chars)", prompt.len())));
+        eprintln!("{}", "=== DEBUG: Model ===".yellow().bold());
+        match std::fs::metadata(&model_path) {
+            Ok(meta) => {
+                let size_mb = meta.len() as f64 / (1024.0 * 1024.0);
+                eprintln!(
+                    "{} {} ({:.1} MB)",
+                    "Path:".blue().bold(),
+                    model_path.display(),
+                    size_mb
+                );
+            }
+            Err(err) => {
+                eprintln!(
+                    "{} {} ({})",
+                    "Path:".blue().bold(),
+                    model_path.display(),
+                    format!("size unavailable: {err}").dimmed()
+                );
+            }
+        }
         eprintln!();
     }
 
-    let response = run_inference(&model_path, &prompt)?;
+    let (response, stats) = run_inference(&model_path, &prompt)?;
 
     if cli.debug {
-        eprintln!("{}", "=== DEBUG: Raw Response ===".yellow().bold());
-        eprintln!("{response}");
-        eprintln!(
-            "{}",
-            format!(
+        print_debug_section(
+            "Raw Response",
+            &response,
+            Some(format!(
                 "({} chars, {} lines)",
                 response.len(),
                 response.lines().count()
-            )
-            .dimmed()
+            )),
         );
-        eprintln!();
     }
 
     // Check if model detected no error, echoed input back, or returned nothing
@@ -466,14 +602,15 @@ fn main() -> Result<()> {
 
     if is_no_error {
         if cli.json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "input": input,
-                    "no_error": true,
-                    "message": "No error detected in input."
-                })
-            );
+            let mut payload = serde_json::json!({
+                "input": input,
+                "no_error": true,
+                "message": "No error detected in input."
+            });
+            if cli.stats {
+                payload["stats"] = serde_json::to_value(&stats)?;
+            }
+            println!("{}", serde_json::to_string_pretty(&payload)?);
         } else {
             println!();
             println!("{} {}", "✓".green(), "No error detected".green().bold());
@@ -483,6 +620,9 @@ fn main() -> Result<()> {
                 "The input doesn't appear to contain an error message.".dimmed()
             );
             println!();
+            if cli.stats {
+                print_stats(&stats);
+            }
         }
         return Ok(());
     }
@@ -496,14 +636,15 @@ fn main() -> Result<()> {
 
     if !has_content {
         if cli.json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "input": input,
-                    "no_error": true,
-                    "message": "Could not analyze input. It may not be an error message."
-                })
-            );
+            let mut payload = serde_json::json!({
+                "input": input,
+                "no_error": true,
+                "message": "Could not analyze input. It may not be an error message."
+            });
+            if cli.stats {
+                payload["stats"] = serde_json::to_value(&stats)?;
+            }
+            println!("{}", serde_json::to_string_pretty(&payload)?);
         } else {
             println!();
             println!(
@@ -517,14 +658,30 @@ fn main() -> Result<()> {
                 "The input may not be an error message, or is too complex to parse.".dimmed()
             );
             println!();
+            if cli.stats {
+                print_stats(&stats);
+            }
         }
         return Ok(());
     }
 
     if cli.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        let mut payload = serde_json::json!({
+            "input": input,
+            "error": result.error,
+            "summary": result.summary,
+            "explanation": result.explanation,
+            "suggestion": result.suggestion
+        });
+        if cli.stats {
+            payload["stats"] = serde_json::to_value(&stats)?;
+        }
+        println!("{}", serde_json::to_string_pretty(&payload)?);
     } else {
         print_colored(&result);
+        if cli.stats {
+            print_stats(&stats);
+        }
     }
 
     Ok(())
@@ -658,6 +815,12 @@ mod tests {
     fn test_cli_parses_short_json_flag() {
         let cli = Cli::parse_from(["why", "-j", "error"]);
         assert!(cli.json);
+    }
+
+    #[test]
+    fn test_cli_parses_stats_flag() {
+        let cli = Cli::parse_from(["why", "--stats", "error"]);
+        assert!(cli.stats);
     }
 
     #[test]
