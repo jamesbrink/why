@@ -320,11 +320,12 @@ fn run_inference(model_path: &PathBuf, prompt: &str) -> Result<String> {
         LlamaSampler::chain_simple([LlamaSampler::dist(1234), LlamaSampler::greedy()]);
 
     let mut decoder = encoding_rs::UTF_8.new_decoder();
-    let max_tokens = 512;
+    let max_gen_tokens = 512;
     let mut n_cur = batch.n_tokens();
+    let start_n = n_cur;
     let mut output = String::new();
 
-    while n_cur <= max_tokens {
+    while can_generate_more(start_n, n_cur, max_gen_tokens) {
         let token = sampler.sample(&ctx, batch.n_tokens() - 1);
         sampler.accept(token);
 
@@ -344,6 +345,10 @@ fn run_inference(model_path: &PathBuf, prompt: &str) -> Result<String> {
     }
 
     Ok(output)
+}
+
+fn can_generate_more(start_n: usize, n_cur: usize, max_gen_tokens: usize) -> bool {
+    n_cur.saturating_sub(start_n) < max_gen_tokens
 }
 
 fn print_completions(shell: Shell) {
@@ -767,6 +772,20 @@ mod tests {
         assert_eq!(result.summary, "Test.");
         assert_eq!(result.explanation, "Details.");
         assert_eq!(result.suggestion, "Fix.");
+    }
+
+    #[test]
+    fn test_generation_limit_allows_long_prompts() {
+        let start_n = 2000;
+        let n_cur = 2000;
+        let max_gen_tokens = 512;
+
+        assert!(can_generate_more(start_n, n_cur, max_gen_tokens));
+        assert!(!can_generate_more(
+            start_n,
+            start_n + max_gen_tokens,
+            max_gen_tokens
+        ));
     }
 
     #[test]
