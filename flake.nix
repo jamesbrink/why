@@ -27,10 +27,10 @@
         cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
         version = cargoToml.package.version;
 
-        # Qwen2.5-Coder GGUF model (fetched directly to avoid git-lfs pointer files)
+        # Qwen2.5-Coder 0.5B Instruct GGUF model (Q8_0 quantization)
         qwen-model = pkgs.fetchurl {
-          url = "https://media.githubusercontent.com/media/jamesbrink/why/refs/heads/main/qwen2.5-coder-0.5b.gguf";
-          sha256 = "1q5dgipixb13qp54hsbwm00cgqc9mfv56957cgi08cy60bmkls90";
+          url = "https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-0.5b-instruct-q8_0.gguf";
+          sha256 = "1la4ndkiywa6swigj60y4xpsxd0zr3p270l747qi5m4pz8hpg9z1";
         };
 
         # GPU features based on platform
@@ -161,9 +161,24 @@
           };
         };
 
+        # Model configuration
+        modelName = "qwen2.5-coder-0.5b-instruct-q8_0.gguf";
+        modelUrl = "https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF/resolve/main/${modelName}";
+
         # Helper script to run full build (debug + release with embedded model)
         buildScript = pkgs.writeShellScriptBin "build" ''
           set -euo pipefail
+
+          MODEL="${modelName}"
+          MODEL_URL="${modelUrl}"
+
+          # Download model if not present
+          if [[ ! -f "$MODEL" ]]; then
+            echo "Model not found, downloading from HuggingFace..."
+            ${pkgs.curl}/bin/curl -L -o "$MODEL" "$MODEL_URL"
+            echo ""
+          fi
+
           echo "Building debug binary with GPU support: ${gpuFeaturesStr}"
           cargo build --features ${gpuFeaturesStr}
           echo ""
@@ -171,7 +186,7 @@
           cargo build --release --features ${gpuFeaturesStr}
           echo ""
           echo "Embedding model..."
-          ./scripts/embed.sh target/release/why qwen2.5-coder-0.5b.gguf why-embedded
+          ./scripts/embed.sh target/release/why "$MODEL" why-embedded
         '';
 
       in

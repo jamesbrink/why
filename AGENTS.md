@@ -5,7 +5,7 @@
 - `src/prompt.txt` is the ChatML-style prompt template.
 - `scripts/embed.sh` embeds the GGUF model into the release binary.
 - `examples/` holds sample inputs (e.g., Python error fixtures).
-- `qwen2.5-coder-0.5b.gguf` is the model file tracked via git-lfs.
+- The GGUF model is fetched from HuggingFace during the nix build.
 
 ## Build, Test, and Development Commands
 - `nix develop` sets up the Rust toolchain and llama-cpp dependencies.
@@ -14,7 +14,7 @@
 - `cargo test` runs unit tests embedded in `src/main.rs`.
 - `cargo clippy` runs lint checks.
 - `cargo tarpaulin` generates coverage reports.
-- `nix build` produces the embedded binary (~400MB with model).
+- `nix build` produces the embedded binary (~680MB with model).
 - `nix build .#why` builds the CLI only (no embedded model).
 
 ## Coding Style & Naming Conventions
@@ -35,4 +35,4 @@
 
 ## Model & Licensing Notes
 - The embedded model is licensed separately (Apache 2.0). Keep `LICENSE` and model attribution intact when distributing binaries.
-- Ensure `git-lfs` is installed before cloning so the GGUF model downloads correctly.
+- The model is automatically fetched from HuggingFace during `nix build`.

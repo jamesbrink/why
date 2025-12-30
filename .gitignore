@@ -9,8 +9,8 @@
 /result
 .direnv/
 
-# Models (large files tracked via git-lfs)
-# *.gguf is now tracked with git-lfs
+# Models (fetched during nix build)
+*.gguf
 llamafile
 why-embedded
 

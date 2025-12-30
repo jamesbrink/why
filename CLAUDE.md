@@ -25,15 +25,15 @@ cargo test test_name
 # Lint
 cargo clippy
 
-# Build embedded binary with nix (includes model, ~400MB)
+# Build embedded binary with nix (includes model, ~680MB)
 nix build
 
 # Build CLI only (no model)
 nix build .#why
 
-# Manual embed for development
+# Manual embed for development (model auto-downloaded by build script)
 cargo build --release
-./scripts/embed.sh target/release/why qwen2.5-coder-0.5b.gguf why-embedded
+./scripts/embed.sh target/release/why qwen2.5-coder-0.5b-instruct-q8_0.gguf why-embedded
 ```
 
 ## Architecture
@@ -66,4 +66,4 @@ At runtime, `find_embedded_model()` reads the trailer to locate and extract the 
 
 ## Model
 
-The GGUF model (`qwen2.5-coder-0.5b.gguf`, ~398MB) is tracked via git-lfs. Ensure git-lfs is installed before cloning.
+The GGUF model (`qwen2.5-coder-0.5b-instruct-q8_0.gguf`, ~676MB) is fetched from HuggingFace during the nix build.

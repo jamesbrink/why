@@ -47,11 +47,11 @@ See the [examples/](examples/) directory for sample scripts in various languages
 
 ### Pre-built Binary
 
-Grab the embedded binary from releases (includes the model, ~400MB).
+Grab the embedded binary from releases (includes the model, ~680MB).
 
 ### Build from Source
 
-Requires [Nix](https://nixos.org/) with flakes enabled and [git-lfs](https://git-lfs.com/) for the model.
+Requires [Nix](https://nixos.org/) with flakes enabled.
 
 On Linux, the flake enables Vulkan GPU acceleration by default (works on NVIDIA/AMD/Intel). CPU-only still works without Vulkan. On macOS, it uses Metal.
 
@@ -59,7 +59,7 @@ On Linux, the flake enables Vulkan GPU acceleration by default (works on NVIDIA/
 git clone https://github.com/jamesbrink/why.git
 cd why
 
-# Build embedded binary (~400MB with model)
+# Build embedded binary (~680MB with model)
 nix build
 ./result/bin/why "segmentation fault"
 ```
@@ -82,7 +82,7 @@ why --completions fish > ~/.config/fish/completions/why.fish
 ## Nix Build Targets
 
 ```bash
-# Build embedded binary (~400MB with model)
+# Build embedded binary (~680MB with model)
 nix build
 
 # Run directly
@@ -122,10 +122,20 @@ Add the overlay to your flake:
 ```bash
 nix develop
 
-cargo build              # Build CLI
+build                    # Build + embed model (auto-downloads if needed)
+cargo build              # Build CLI only
 cargo test               # Run tests
 cargo clippy             # Lint
 cargo tarpaulin          # Coverage report
+```
+
+### Manual Model Download
+
+The `build` command auto-downloads the model, but you can also download it manually:
+
+```bash
+curl -L -o qwen2.5-coder-0.5b-instruct-q8_0.gguf \
+  https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-0.5b-instruct-q8_0.gguf
 ```
 
 ## How It Works
@@ -143,7 +153,7 @@ This project is licensed under the [MIT License](LICENSE).
 
 ### Model
 
-Uses [Qwen2.5-Coder 0.5B](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF) (Q4_K_M quantization, ~398MB) tracked via git-lfs.
+Uses [Qwen2.5-Coder 0.5B](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF) (Q8_0 quantization, ~676MB) fetched from HuggingFace during build.
 
 This project uses [Qwen2.5-Coder](https://github.com/QwenLM/Qwen2.5-Coder) by the Qwen Team (Alibaba Group), licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 
