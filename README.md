@@ -45,9 +45,36 @@ See the [examples/](examples/) directory for sample scripts in various languages
 
 ## Installation
 
-### Pre-built Binary
+### Quick Install (Recommended)
 
-Grab the embedded binary from releases (includes the model, ~680MB).
+```bash
+curl -sSfL https://raw.githubusercontent.com/jamesbrink/why/main/install.sh | sh
+```
+
+This downloads the latest release binary (~680MB, includes the model) and installs it to `~/.local/bin` or `/usr/local/bin`.
+
+**Options:**
+```bash
+# Install to a specific directory
+WHY_INSTALL_DIR=/opt/bin curl -sSfL https://raw.githubusercontent.com/jamesbrink/why/main/install.sh | sh
+
+# Install a specific version
+WHY_VERSION=v0.1.0 curl -sSfL https://raw.githubusercontent.com/jamesbrink/why/main/install.sh | sh
+```
+
+### Pre-built Binary (Manual)
+
+Download the binary for your platform from [Releases](https://github.com/jamesbrink/why/releases):
+- `why-x86_64-linux` - Linux (x86_64)
+- `why-aarch64-darwin` - macOS (Apple Silicon)
+- `why-x86_64-darwin` - macOS (Intel)
+
+```bash
+# Example for Linux x86_64
+curl -L -o why https://github.com/jamesbrink/why/releases/latest/download/why-x86_64-linux
+chmod +x why
+sudo mv why /usr/local/bin/
+```
 
 ### Build from Source
 
@@ -62,6 +89,18 @@ cd why
 # Build embedded binary (~680MB with model)
 nix build
 ./result/bin/why "segmentation fault"
+```
+
+## Uninstall
+
+```bash
+# Remove the binary
+rm $(which why)
+
+# Or if you used the installer with default paths
+rm ~/.local/bin/why
+# or
+sudo rm /usr/local/bin/why
 ```
 
 ## Shell Completions
