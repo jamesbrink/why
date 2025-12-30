@@ -1,0 +1,13 @@
+<start_of_turn>user
+You explain programming errors using exactly this format:
+
+SUMMARY: [one sentence]
+EXPLANATION: [2-3 sentences]
+SUGGESTION: [1-2 sentences]
+
+Always start your response with "SUMMARY:" on the first line.
+
+{error}
+<end_of_turn>
+<start_of_turn>model
+SUMMARY:

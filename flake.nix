@@ -40,6 +40,7 @@
             url = "https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-0.5b-instruct-q8_0.gguf";
             sha256 = "1la4ndkiywa6swigj60y4xpsxd0zr3p270l747qi5m4pz8hpg9z1";
             description = "Qwen2.5-Coder 0.5B Instruct (Q8_0) - ~530MB, good quality";
+            family = "qwen";
           };
 
           # Qwen3 0.6B - newer model, similar size
@@ -48,6 +49,7 @@
             url = "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf";
             sha256 = "0cdh7c26vlcv4l3ljrh7809cfhvh2689xfdlkd6kbmdd48xfcrcl";
             description = "Qwen3 0.6B (Q8_0) - ~639MB, newest Qwen model";
+            family = "qwen";
           };
 
           # SmolLM2 135M - tiny model for fast experimentation
@@ -56,6 +58,7 @@
             url = "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf";
             sha256 = "10xsdfq2wx0685kd7xx9hw4xha0jkcdmi60xqlf784vrdxqra4ss";
             description = "SmolLM2 135M Instruct (Q8_0) - ~145MB, fastest/smallest";
+            family = "smollm";
           };
 
           # Gemma 3 270M - Google's small model
@@ -64,6 +67,7 @@
             url = "https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q8_0.gguf";
             sha256 = "164nkcwi7b8aca9a45qgs2w8mwhz1z11qz1wsnqw2y9gkwasamni";
             description = "Gemma 3 270M Instruct (Q8_0) - ~292MB, Google";
+            family = "gemma";
           };
         };
 
@@ -155,17 +159,22 @@
 
               echo "Binary: ${why-cli}/bin/why ($BINARY_SIZE bytes)"
               echo "Model: ${model.name} ($MODEL_SIZE bytes)"
+              echo "Family: ${model.family}"
 
               cat ${why-cli}/bin/why > why-embedded
 
               cat ${modelFile} >> why-embedded
 
+              # Trailer format: WHYMODEL (8) + offset (8) + size (8) + family (1) = 25 bytes
+              # Family: 0=qwen, 1=gemma, 2=smollm
               python3 -c "
               import struct
               import sys
               offset = $BINARY_SIZE
               size = $MODEL_SIZE
-              trailer = b'WHYMODEL' + struct.pack('<Q', offset) + struct.pack('<Q', size)
+              family_map = {'qwen': 0, 'gemma': 1, 'smollm': 2}
+              family = family_map.get('${model.family}', 0)
+              trailer = b'WHYMODEL' + struct.pack('<Q', offset) + struct.pack('<Q', size) + struct.pack('<B', family)
               sys.stdout.buffer.write(trailer)
               " >> why-embedded
 

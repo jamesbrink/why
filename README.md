@@ -45,6 +45,12 @@ python script.py 2>&1 | why
 
 # For the robots
 why --json "null pointer exception"
+
+# Use external model (CLI-only build)
+why --model /path/to/model.gguf "error message"
+
+# Override template for non-standard models
+why --template gemma --model /path/to/gemma.gguf "error"
 ```
 
 See the [examples/](examples/) directory for sample scripts in various languages that produce common errors.
@@ -68,6 +74,7 @@ curl -sSfL https://raw.githubusercontent.com/jamesbrink/why/main/install.sh | sh
 This downloads the latest release binary (~680MB, includes the model) and installs it to `~/.local/bin` or `/usr/local/bin`.
 
 **Options:**
+
 ```bash
 # Install to a specific directory
 WHY_INSTALL_DIR=/opt/bin curl -sSfL https://raw.githubusercontent.com/jamesbrink/why/main/install.sh | sh
@@ -79,6 +86,7 @@ WHY_VERSION=v0.1.0 curl -sSfL https://raw.githubusercontent.com/jamesbrink/why/m
 ### Pre-built Binary (Manual)
 
 Download the binary for your platform from [Releases](https://github.com/jamesbrink/why/releases):
+
 - `why-x86_64-linux` - Linux (x86_64)
 - `why-aarch64-darwin` - macOS (Apple Silicon)
 - `why-x86_64-darwin` - macOS (Intel)
