@@ -89,7 +89,7 @@
           # Don't strip - it removes the embedded model!
           dontStrip = true;
 
-          nativeBuildInputs = [ pkgs.python3 ];
+          nativeBuildInputs = [ pkgs.python3 pkgs.installShellFiles ];
 
           buildPhase = ''
             runHook preBuild
@@ -128,6 +128,12 @@
           installPhase = ''
             mkdir -p $out/bin
             cp why-embedded $out/bin/why
+
+            # Generate and install shell completions
+            installShellCompletion --cmd why \
+              --bash <($out/bin/why --completions bash) \
+              --zsh <($out/bin/why --completions zsh) \
+              --fish <($out/bin/why --completions fish)
           '';
 
           meta = why-cli.meta // {
