@@ -12,6 +12,12 @@ keywords = ["cli", "llm", "error-handling", "developer-tools", "ai"]
 categories = ["command-line-utilities", "development-tools"]
 autoexamples = false  # Don't try to compile example error scripts
 
+[features]
+default = []
+cuda = ["llama-cpp-2/cuda"]
+vulkan = ["llama-cpp-2/vulkan"]
+metal = ["llama-cpp-2/metal"]
+
 [dependencies]
 llama-cpp-2 = "0.1"
 anyhow = "1.0"

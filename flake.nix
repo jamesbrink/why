@@ -17,6 +17,7 @@
       let
         pkgs = import nixpkgs {
           inherit system;
+          config.allowUnfree = true;  # Only for CUDA packages, doesn't trigger rebuilds
         };
 
         isDarwin = pkgs.stdenv.isDarwin;
@@ -30,6 +31,12 @@
         # Qwen2.5-Coder GGUF model (tracked via git-lfs)
         qwen-model = ./qwen2.5-coder-0.5b.gguf;
 
+        # GPU features based on platform
+        # Linux: CUDA (NVIDIA) + Vulkan (AMD/Intel)
+        # macOS: Metal (Apple GPU)
+        gpuFeatures = if isDarwin then [ "metal" ] else [ "cuda" "vulkan" ];
+        gpuFeaturesStr = builtins.concatStringsSep "," gpuFeatures;
+
         # Platform-specific native build inputs for llama-cpp-sys-2
         # New Darwin SDK pattern: just add apple-sdk and it provides all frameworks
         darwinBuildInputs = [
@@ -38,7 +45,15 @@
         ];
 
         linuxBuildInputs = with pkgs; [
-          # For potential CUDA/OpenCL support on Linux
+          # CUDA support (NVIDIA GPUs)
+          cudaPackages.cuda_nvcc
+          cudaPackages.cuda_cudart
+          cudaPackages.libcublas
+          # Vulkan support (AMD/Intel GPUs)
+          vulkan-headers
+          vulkan-loader
+          shaderc
+          glslang
         ];
 
         # Build the why CLI
@@ -56,7 +71,11 @@
             pkg-config
             cmake
             rustPlatform.bindgenHook
-          ];
+          ] ++ (if isLinux then [
+            cudaPackages.cuda_nvcc
+            # Vulkan shader compiler (glslc) - must be in nativeBuildInputs for CMake to find it
+            shaderc
+          ] else []);
 
           buildInputs = with pkgs; [
             openssl
@@ -64,6 +83,9 @@
 
           # Environment variables for the build
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+
+          # Enable GPU acceleration via cargo features
+          buildFeatures = gpuFeatures;
 
           # Disable running tests during build (they need the model)
           doCheck = false;
@@ -145,11 +167,11 @@
         # Helper script to run full build (debug + release with embedded model)
         buildScript = pkgs.writeShellScriptBin "build" ''
           set -euo pipefail
-          echo "Building debug binary..."
-          cargo build
+          echo "Building debug binary with GPU support: ${gpuFeaturesStr}"
+          cargo build --features ${gpuFeaturesStr}
           echo ""
-          echo "Building release binary..."
-          cargo build --release
+          echo "Building release binary with GPU support: ${gpuFeaturesStr}"
+          cargo build --release --features ${gpuFeaturesStr}
           echo ""
           echo "Embedding model..."
           ./scripts/embed.sh target/release/why qwen2.5-coder-0.5b.gguf why-embedded
@@ -195,9 +217,26 @@
             # macOS specific - new SDK provides frameworks and libiconv
             apple-sdk_15
             darwin.cctools
-          ] else []);
+          ] else [
+            # Linux GPU support
+            cudaPackages.cuda_nvcc
+            cudaPackages.cuda_cudart
+            cudaPackages.libcublas
+            vulkan-headers
+            vulkan-loader
+            shaderc
+            glslang
+          ]);
 
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+
+          # Pass CUDA library paths to rustc linker for static libs
+          RUSTFLAGS = pkgs.lib.optionalString isLinux "-L ${pkgs.cudaPackages.cuda_cudart}/lib -L ${pkgs.cudaPackages.libcublas}/lib";
+
+          shellHook = ''
+            echo "GPU support: ${gpuFeaturesStr}"
+            echo "Use 'build' script or 'cargo build --features ${gpuFeaturesStr}'"
+          '';
         };
       }
     );

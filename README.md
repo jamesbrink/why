@@ -1,5 +1,6 @@
 # why
 
+[![CI](https://github.com/jamesbrink/why/actions/workflows/ci.yml/badge.svg)](https://github.com/jamesbrink/why/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 [![Nix Flake](https://img.shields.io/badge/Nix-Flake-5277C3?logo=nixos)](https://nixos.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
