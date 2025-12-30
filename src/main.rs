@@ -256,6 +256,124 @@ fn build_prompt(error: &str) -> String {
     PROMPT_TEMPLATE.replace("{error}", error.trim())
 }
 
+/// Sampling parameters for inference
+#[derive(Clone)]
+struct SamplingParams {
+    temperature: f32,
+    top_p: f32,
+    top_k: i32,
+    seed: Option<u32>,
+}
+
+impl Default for SamplingParams {
+    fn default() -> Self {
+        Self {
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 40,
+            seed: None,
+        }
+    }
+}
+
+/// Maximum number of retries when detecting degenerate output
+const MAX_RETRIES: usize = 2;
+
+/// Check if the response contains degenerate patterns (repetitive characters/sequences)
+/// that indicate the model is stuck in a loop
+fn is_degenerate_response(response: &str) -> bool {
+    let response = response.trim();
+
+    // Empty or very short responses aren't degenerate, just empty
+    if response.len() < 20 {
+        return false;
+    }
+
+    // Check 1: Long runs of the same character (e.g., "AAAA..." or "@@@@...")
+    let chars: Vec<char> = response.chars().collect();
+    let mut max_run = 1;
+    let mut current_run = 1;
+    for i in 1..chars.len() {
+        if chars[i] == chars[i - 1] {
+            current_run += 1;
+            max_run = max_run.max(current_run);
+        } else {
+            current_run = 1;
+        }
+    }
+    // More than 20 identical characters in a row is degenerate
+    if max_run > 20 {
+        return true;
+    }
+
+    // Check 2: Short repeating patterns (e.g., "@ @ @ @ " or "ab ab ab ab")
+    // Look for patterns of length 1-4 that repeat many times
+    for pattern_len in 1..=4 {
+        if response.len() >= pattern_len * 10 {
+            let pattern: String = chars.iter().take(pattern_len).collect();
+            let repeated = pattern.repeat(10);
+            if response.contains(&repeated) {
+                return true;
+            }
+        }
+    }
+
+    // Check 3: High single-character dominance
+    // If any single character makes up more than 50% of the response, it's suspicious
+    let mut char_counts = std::collections::HashMap::new();
+    for c in chars.iter() {
+        if !c.is_whitespace() {
+            *char_counts.entry(c).or_insert(0) += 1;
+        }
+    }
+    let non_whitespace_count: usize = char_counts.values().sum();
+    if non_whitespace_count > 0 {
+        if let Some(&max_count) = char_counts.values().max() {
+            if max_count as f64 / non_whitespace_count as f64 > 0.5 {
+                return true;
+            }
+        }
+    }
+
+    // Check 4: Repeating word/token patterns (e.g., "sha256 sha256 sha256")
+    let words: Vec<&str> = response.split_whitespace().collect();
+    if words.len() >= 10 {
+        let mut word_run = 1;
+        let mut max_word_run = 1;
+        for i in 1..words.len() {
+            if words[i] == words[i - 1] {
+                word_run += 1;
+                max_word_run = max_word_run.max(word_run);
+            } else {
+                word_run = 1;
+            }
+        }
+        // More than 5 identical words in a row is degenerate
+        if max_word_run > 5 {
+            return true;
+        }
+
+        // Check 5: Repeating word pairs/triplets (e.g., "RELEASE: REQ: RELEASE: REQ:")
+        for pattern_len in 2..=3 {
+            if words.len() >= pattern_len * 5 {
+                let pattern: Vec<&str> = words.iter().take(pattern_len).copied().collect();
+                let mut matches = 0;
+                for chunk in words.chunks(pattern_len) {
+                    if chunk == pattern.as_slice() {
+                        matches += 1;
+                    }
+                }
+                // If the same word pattern repeats 5+ times, it's degenerate
+                if matches >= 5 {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
 /// Check if the model just echoed the input back (indicates confusion, not an error)
 fn is_echo_response(input: &str, response: &str) -> bool {
     let response_trimmed = response.trim();
@@ -510,7 +628,11 @@ fn print_colored(result: &ErrorExplanation) {
     }
 }
 
-fn run_inference(model_path: &PathBuf, prompt: &str) -> Result<(String, InferenceStats)> {
+fn run_inference(
+    model_path: &PathBuf,
+    prompt: &str,
+    params: &SamplingParams,
+) -> Result<(String, InferenceStats)> {
     let total_start = Instant::now();
     let backend = LlamaBackend::init()?;
 
@@ -558,15 +680,19 @@ fn run_inference(model_path: &PathBuf, prompt: &str) -> Result<(String, Inferenc
     ctx.decode(&mut batch)?;
     let prompt_eval_ms = prompt_eval_start.elapsed().as_millis();
 
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let seed = (seed ^ (seed >> 32)) as u32;
+    // Use provided seed or generate one from system time
+    let seed = params.seed.unwrap_or_else(|| {
+        let t = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        (t ^ (t >> 32)) as u32
+    });
+
     let mut sampler = LlamaSampler::chain_simple([
-        LlamaSampler::top_k(40),
-        LlamaSampler::top_p(0.9, 1),
-        LlamaSampler::temp(0.7),
+        LlamaSampler::top_k(params.top_k),
+        LlamaSampler::top_p(params.top_p, 1),
+        LlamaSampler::temp(params.temperature),
         LlamaSampler::dist(seed),
     ]);
 
@@ -688,16 +814,73 @@ fn main() -> Result<()> {
         eprintln!();
     }
 
-    let (response, stats) = run_inference(&model_path, &prompt)?;
+    // Run inference with retry logic for degenerate outputs
+    let mut params = SamplingParams::default();
+    let mut response;
+    let mut stats;
+    let mut retries = 0;
+
+    loop {
+        (response, stats) = run_inference(&model_path, &prompt, &params)?;
+
+        // Check for degenerate output (repetitive patterns)
+        if is_degenerate_response(&response) {
+            retries += 1;
+            if retries > MAX_RETRIES {
+                if cli.debug {
+                    eprintln!(
+                        "{}",
+                        format!(
+                            "Degenerate output detected after {} retries, giving up",
+                            retries
+                        )
+                        .yellow()
+                    );
+                }
+                break;
+            }
+
+            // Adjust sampling parameters for retry
+            // Lower temperature and use a different seed to get more focused output
+            params.temperature = 0.5 - (retries as f32 * 0.15); // 0.35, then 0.2
+            params.temperature = params.temperature.max(0.1);
+            params.top_p = 0.8;
+            params.seed = Some(retries as u32 * 12345 + 42);
+
+            if cli.debug {
+                eprintln!(
+                    "{}",
+                    format!(
+                        "Degenerate output detected, retrying ({}/{}) with temp={:.2}",
+                        retries, MAX_RETRIES, params.temperature
+                    )
+                    .yellow()
+                );
+            } else {
+                eprintln!(
+                    "{}",
+                    format!("Retrying inference ({}/{})...", retries, MAX_RETRIES).dimmed()
+                );
+            }
+            continue;
+        }
+
+        break;
+    }
 
     if cli.debug {
         print_debug_section(
             "Raw Response",
             &response,
             Some(format!(
-                "({} chars, {} lines)",
+                "({} chars, {} lines{})",
                 response.len(),
-                response.lines().count()
+                response.lines().count(),
+                if retries > 0 {
+                    format!(", {} retries", retries)
+                } else {
+                    String::new()
+                }
             )),
         );
     }
@@ -705,7 +888,8 @@ fn main() -> Result<()> {
     // Check if model detected no error, echoed input back, or returned nothing
     let is_no_error = response.trim().is_empty()
         || response.trim().starts_with("NO_ERROR")
-        || is_echo_response(&input, &response);
+        || is_echo_response(&input, &response)
+        || (retries > MAX_RETRIES && is_degenerate_response(&response));
 
     if is_no_error {
         if cli.json {
@@ -1264,5 +1448,70 @@ mod tests {
         assert!(result.summary.contains("lowercase labels"));
         assert!(result.explanation.contains("parse correctly"));
         assert!(result.suggestion.contains("so should this"));
+    }
+
+    // Degenerate response detection tests
+    #[test]
+    fn test_is_degenerate_response_long_char_run() {
+        // Long run of 'A' characters
+        let response = "The hash is ".to_string() + &"A".repeat(50);
+        assert!(is_degenerate_response(&response));
+    }
+
+    #[test]
+    fn test_is_degenerate_response_repeating_pattern() {
+        // Repeating "@ " pattern
+        let response = "@ ".repeat(20);
+        assert!(is_degenerate_response(&response));
+    }
+
+    #[test]
+    fn test_is_degenerate_response_repeating_words() {
+        // Same word repeated many times
+        let response = "sha256 ".repeat(10);
+        assert!(is_degenerate_response(&response));
+    }
+
+    #[test]
+    fn test_is_degenerate_response_release_req_pattern() {
+        // The actual pattern from user's report
+        let response = "RELEASE: REQ: ".repeat(20);
+        assert!(is_degenerate_response(&response));
+    }
+
+    #[test]
+    fn test_is_degenerate_response_high_char_dominance() {
+        // Single character makes up > 50% of response
+        let response = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx abc";
+        assert!(is_degenerate_response(response));
+    }
+
+    #[test]
+    fn test_is_degenerate_response_normal_response() {
+        // A normal, well-formed response should not be flagged
+        let response = "SUMMARY: This is a segmentation fault error.\n\
+            EXPLANATION: The program tried to access memory it doesn't have permission to access.\n\
+            SUGGESTION: Check for null pointers and array bounds.";
+        assert!(!is_degenerate_response(response));
+    }
+
+    #[test]
+    fn test_is_degenerate_response_short_response() {
+        // Very short responses aren't degenerate, just short
+        assert!(!is_degenerate_response("OK"));
+        assert!(!is_degenerate_response("Error found"));
+    }
+
+    #[test]
+    fn test_is_degenerate_response_empty() {
+        assert!(!is_degenerate_response(""));
+        assert!(!is_degenerate_response("   "));
+    }
+
+    #[test]
+    fn test_is_degenerate_response_code_block() {
+        // Code with repetitive structure shouldn't trigger false positives
+        let response = "SUMMARY: Fix the loop.\nEXPLANATION:\n```\nfor i in range(10):\n    print(i)\n```\nSUGGESTION: Use enumerate.";
+        assert!(!is_degenerate_response(response));
     }
 }
