@@ -64,6 +64,7 @@
             license = licenses.mit;
             maintainers = [ ];
             platforms = platforms.unix;
+            mainProgram = "why";
           };
         };
 
@@ -121,6 +122,7 @@
 
           meta = why-cli.meta // {
             description = "Quick error explanation CLI with embedded LLM model";
+            mainProgram = "why";
           };
         };
 
