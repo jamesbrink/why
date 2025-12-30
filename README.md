@@ -88,6 +88,34 @@ nix build .#why
 nix run . -- "segmentation fault"
 ```
 
+## NixOS / Home Manager
+
+Add the overlay to your flake:
+
+```nix
+{
+  inputs.why.url = "github:jamesbrink/why";
+
+  outputs = { nixpkgs, why, ... }: {
+    # NixOS
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      modules = [{
+        nixpkgs.overlays = [ why.overlays.default ];
+        environment.systemPackages = [ pkgs.why ];
+      }];
+    };
+
+    # Home Manager (standalone)
+    homeConfigurations.myuser = home-manager.lib.homeManagerConfiguration {
+      modules = [{
+        nixpkgs.overlays = [ why.overlays.default ];
+        home.packages = [ pkgs.why ];
+      }];
+    };
+  };
+}
+```
+
 ## Development
 
 ```bash

@@ -7,6 +7,13 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
+    {
+      # Overlay for easy integration into NixOS/home-manager configs
+      overlays.default = final: prev: {
+        why = self.packages.${final.system}.default;
+        why-cli = self.packages.${final.system}.why;
+      };
+    } //
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
