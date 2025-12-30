@@ -50,6 +50,10 @@ struct Cli {
     #[arg(long)]
     stats: bool,
 
+    /// Path to GGUF model file (overrides embedded model)
+    #[arg(long, short = 'm', value_name = "PATH")]
+    model: Option<PathBuf>,
+
     /// Generate shell completions
     #[arg(long, value_enum, value_name = "SHELL")]
     completions: Option<Shell>,
@@ -176,8 +180,19 @@ fn find_embedded_model() -> Result<(u64, u64)> {
     Ok((offset, size))
 }
 
-fn get_model_path() -> Result<PathBuf> {
-    // Check for embedded model first
+fn get_model_path(cli_model: Option<&PathBuf>) -> Result<PathBuf> {
+    // CLI flag takes highest priority
+    if let Some(model_path) = cli_model {
+        if model_path.exists() {
+            return Ok(model_path.clone());
+        }
+        bail!(format_error(
+            &format!("Model not found: {}", model_path.display()),
+            Some("Check the path and try again")
+        ));
+    }
+
+    // Check for embedded model
     if let Ok((offset, size)) = find_embedded_model() {
         let exe_path = env::current_exe()?;
         let mut file = File::open(&exe_path)?;
@@ -196,7 +211,6 @@ fn get_model_path() -> Result<PathBuf> {
 
     // Fallback: look for model file in current dir or next to exe
     let candidates = [
-        PathBuf::from("qwen2.5-coder-0.5b.gguf"),
         PathBuf::from("model.gguf"),
         env::current_exe()
             .ok()
@@ -211,7 +225,7 @@ fn get_model_path() -> Result<PathBuf> {
     }
 
     let message = format!(
-        "{} {}\n{} {}\n  1. Place qwen2.5-coder-0.5b.gguf in current directory\n  2. Embed model: ./scripts/embed.sh target/release/why model.gguf why-embedded",
+        "{} {}\n{} {}\n  1. Use --model <path> to specify a GGUF model\n  2. Place model.gguf in current directory\n  3. Embed model: ./scripts/embed.sh target/release/why model.gguf why-embedded",
         "Error:".red().bold(),
         "No model found.",
         "Tip:".blue().bold(),
@@ -777,7 +791,7 @@ fn main() -> Result<()> {
     }
 
     let input = get_input(&cli)?;
-    let model_path = get_model_path()?;
+    let model_path = get_model_path(cli.model.as_ref())?;
     let prompt = build_prompt(&input);
 
     if cli.debug {

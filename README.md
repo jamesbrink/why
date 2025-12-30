@@ -135,11 +135,13 @@ why --completions fish > ~/.config/fish/completions/why.fish
 ## Nix Build Targets
 
 ```bash
-# Build embedded binary (~680MB with model)
-nix build
+nix build              # Default (Qwen2.5-Coder, ~680MB)
+nix build .#cli        # CLI only, no model (~4.5MB)
+nix build .#why-qwen3  # Qwen3 0.6B variant (~644MB)
+nix build .#why-smollm2 # SmolLM2 135M variant (~149MB)
 
-# Run directly
-nix run . -- "segmentation fault"
+# Use CLI with external model
+nix run .#cli -- --model /path/to/model.gguf "error"
 ```
 
 ## NixOS / Home Manager
@@ -204,13 +206,14 @@ The model is embedded directly in the binary using a custom trailer format. On f
 
 This project is licensed under the [MIT License](LICENSE).
 
-### Model
+### Models
 
-Uses [Qwen2.5-Coder 0.5B](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF) (Q8_0 quantization, ~676MB) fetched from HuggingFace during build.
+Available model variants (all Apache 2.0 licensed):
 
-This project uses [Qwen2.5-Coder](https://github.com/QwenLM/Qwen2.5-Coder) by the Qwen Team (Alibaba Group), licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+| Model | Size | Note |
+| ----- | ---- | ---- |
+| [Qwen2.5-Coder 0.5B](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF) | ~530MB | Default |
+| [Qwen3 0.6B](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF) | ~639MB | Newest |
+| [SmolLM2 135M](https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF) | ~145MB | Smallest |
 
-When distributing binaries with an embedded model, both licenses apply:
-
-- The `why` CLI code: MIT License
-- The Qwen2.5-Coder model: Apache License 2.0
+When distributing binaries with an embedded model, both the MIT (CLI) and Apache 2.0 (model) licenses apply.
