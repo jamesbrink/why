@@ -24,7 +24,12 @@ const MAGIC: &[u8; 8] = b"WHYMODEL";
 
 /// Quick error explanation using local LLM
 #[derive(Parser, Debug)]
-#[command(name = "why", version, about, long_about = None)]
+#[command(
+    name = "why",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("WHY_GIT_SHA"), ")"),
+    about,
+    long_about = None
+)]
 #[command(
     after_help = "EXAMPLES:\n    why \"segmentation fault\"\n    cargo build 2>&1 | why\n    why --json \"null pointer exception\""
 )]

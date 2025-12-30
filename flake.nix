@@ -27,8 +27,11 @@
         cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
         version = cargoToml.package.version;
 
-        # Qwen2.5-Coder GGUF model (tracked via git-lfs)
-        qwen-model = ./qwen2.5-coder-0.5b.gguf;
+        # Qwen2.5-Coder GGUF model (fetched directly to avoid git-lfs pointer files)
+        qwen-model = pkgs.fetchurl {
+          url = "https://media.githubusercontent.com/media/jamesbrink/why/refs/heads/main/qwen2.5-coder-0.5b.gguf";
+          sha256 = "1q5dgipixb13qp54hsbwm00cgqc9mfv56957cgi08cy60bmkls90";
+        };
 
         # GPU features based on platform
         # Linux: Vulkan (AMD/Intel/NVIDIA via Vulkan drivers)

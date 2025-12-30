@@ -11,6 +11,7 @@ readme = "README.md"
 keywords = ["cli", "llm", "error-handling", "developer-tools", "ai"]
 categories = ["command-line-utilities", "development-tools"]
 autoexamples = false  # Don't try to compile example error scripts
+build = "build.rs"
 
 [features]
 default = []
