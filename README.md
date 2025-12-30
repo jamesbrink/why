@@ -10,7 +10,9 @@ Simple CLI to explain errors using an embedded LLM, so you don't lose your shit.
 
 No API keys. No internet. No patience required.
 
-![why demo](why.gif)
+<p align="center">
+  <img src="why.gif" alt="why demo">
+</p>
 
 ## Quick Start
 

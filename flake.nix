@@ -223,6 +223,11 @@
             # Used by embed.sh for size calculations
             bc
 
+            # Python tools
+            ruff
+            python3
+            python3Packages.pyyaml
+
             # Helper scripts
             buildScript
           ] ++ (if isDarwin then [

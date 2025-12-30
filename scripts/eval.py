@@ -2,23 +2,23 @@
 """
 Evaluation script for the `why` CLI.
 
-Runs through error examples from CSV or example scripts, pipes them to `why`,
+Runs through error examples from YAML, pipes them to `why`,
 and reports on the quality of explanations with formatted markdown output.
 """
 
 import argparse
-import csv
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+import yaml
 
 
 # ANSI colors
@@ -48,6 +48,7 @@ class Colors:
 @dataclass
 class ErrorCase:
     """Represents an error test case."""
+
     id: str
     language: str
     error_type: str
@@ -57,6 +58,7 @@ class ErrorCase:
 @dataclass
 class EvalResult:
     """Result of evaluating a single error case."""
+
     case: ErrorCase
     success: bool
     why_output: dict = field(default_factory=dict)
@@ -68,22 +70,24 @@ class EvalResult:
     error_message: str = ""
 
 
-def load_errors_from_csv(csv_path: Path) -> list[ErrorCase]:
-    """Load error cases from CSV file."""
-    cases = []
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            cases.append(ErrorCase(
-                id=row["id"],
-                language=row["language"],
-                error_type=row["error_type"],
-                error_text=row["error_text"],
-            ))
-    return cases
+def load_errors_from_yaml(yaml_path: Path) -> list[ErrorCase]:
+    """Load error cases from YAML file."""
+    with open(yaml_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    return [
+        ErrorCase(
+            id=item["id"],
+            language=item["language"],
+            error_type=item["error_type"],
+            error_text=item["error_text"].rstrip("\n"),
+        )
+        for item in data
+    ]
 
 
-def run_why(why_binary: Path, error_input: str, use_json: bool = True, stats: bool = True) -> tuple[dict, int]:
+def run_why(
+    why_binary: Path, error_input: str, use_json: bool = True, stats: bool = True
+) -> tuple[dict, int]:
     """Run the why CLI with the given error input."""
     cmd = [str(why_binary)]
     if use_json:
@@ -167,23 +171,17 @@ def render_markdown(text: str, indent: str = "") -> str:
 
         # Inline code: `code`
         processed = re.sub(
-            r"`([^`]+)`",
-            lambda m: f"{c.CYAN}{m.group(1)}{c.NC}",
-            processed
+            r"`([^`]+)`", lambda m: f"{c.CYAN}{m.group(1)}{c.NC}", processed
         )
 
         # Bold: **text**
         processed = re.sub(
-            r"\*\*([^*]+)\*\*",
-            lambda m: f"{c.BOLD}{m.group(1)}{c.NC}",
-            processed
+            r"\*\*([^*]+)\*\*", lambda m: f"{c.BOLD}{m.group(1)}{c.NC}", processed
         )
 
         # Italic: *text*
         processed = re.sub(
-            r"\*([^*]+)\*",
-            lambda m: f"{c.ITALIC}{m.group(1)}{c.NC}",
-            processed
+            r"\*([^*]+)\*", lambda m: f"{c.ITALIC}{m.group(1)}{c.NC}", processed
         )
 
         lines.append(f"{indent}{processed}")
@@ -225,7 +223,9 @@ def print_result_summary(result: EvalResult, verbose: bool = False):
     if result.inference_time_ms > 0:
         timing = f" {c.DIM}({result.inference_time_ms}ms){c.NC}"
 
-    print(f"  {icon} {c.BOLD}{result.case.id}{c.NC} [{result.case.language}] - {status}{timing}")
+    print(
+        f"  {icon} {c.BOLD}{result.case.id}{c.NC} [{result.case.language}] - {status}{timing}"
+    )
 
     if verbose and result.success:
         output = result.why_output
@@ -281,7 +281,9 @@ def print_detailed_result(result: EvalResult, show_input: bool = True):
             stats = output["stats"]
             print(f"\n  {c.MAGENTA}Stats:{c.NC}")
             print(f"    Backend: {stats.get('backend', 'unknown')}")
-            print(f"    Tokens: prompt {stats.get('prompt_tokens', 0)}, gen {stats.get('generated_tokens', 0)}")
+            print(
+                f"    Tokens: prompt {stats.get('prompt_tokens', 0)}, gen {stats.get('generated_tokens', 0)}"
+            )
             print(f"    Speed: {stats.get('gen_tok_per_s', 0):.1f} tok/s")
     else:
         print(f"  {c.RED}Failed: {result.error_message}{c.NC}")
@@ -313,7 +315,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                      # Run all CSV cases
+  %(prog)s                      # Run all cases
   %(prog)s -v                   # Verbose output
   %(prog)s -d                   # Detailed output with markdown
   %(prog)s -f python            # Filter by language
@@ -323,17 +325,19 @@ Examples:
         """,
     )
     parser.add_argument(
-        "--binary", "-b",
+        "--binary",
+        "-b",
         type=Path,
         help="Path to why binary (auto-detected if not specified)",
     )
     parser.add_argument(
-        "--csv",
+        "--data",
         type=Path,
-        help="Path to errors CSV (default: eval/errors.csv)",
+        help="Path to errors YAML (default: eval/errors.yaml)",
     )
     parser.add_argument(
-        "--filter", "-f",
+        "--filter",
+        "-f",
         type=str,
         help="Filter cases by language or id (substring match)",
     )
@@ -343,22 +347,26 @@ Examples:
         help="Run only case with this exact id",
     )
     parser.add_argument(
-        "--limit", "-n",
+        "--limit",
+        "-n",
         type=int,
         help="Limit number of cases to run",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Show more detail in summary output",
     )
     parser.add_argument(
-        "--detailed", "-d",
+        "--detailed",
+        "-d",
         action="store_true",
         help="Show full detailed output with markdown rendering",
     )
     parser.add_argument(
-        "--json", "-j",
+        "--json",
+        "-j",
         action="store_true",
         help="Output results as JSON",
     )
@@ -385,7 +393,9 @@ Examples:
     if args.binary:
         why_binary = args.binary.resolve()
         if not why_binary.exists():
-            print(f"{c.RED}Error:{c.NC} Binary not found: {why_binary}", file=sys.stderr)
+            print(
+                f"{c.RED}Error:{c.NC} Binary not found: {why_binary}", file=sys.stderr
+            )
             sys.exit(1)
     else:
         why_binary = find_why_binary()
@@ -394,21 +404,21 @@ Examples:
             print(f"{c.DIM}Try: nix build && ./scripts/eval.py{c.NC}", file=sys.stderr)
             sys.exit(1)
 
-    # Find CSV file
+    # Find data file
     script_dir = Path(__file__).parent.resolve()
     project_root = script_dir.parent
 
-    if args.csv:
-        csv_path = args.csv
+    if args.data:
+        data_path = args.data
     else:
-        csv_path = project_root / "eval" / "errors.csv"
+        data_path = project_root / "eval" / "errors.yaml"
 
-    if not csv_path.exists():
-        print(f"{c.RED}Error:{c.NC} CSV not found: {csv_path}", file=sys.stderr)
+    if not data_path.exists():
+        print(f"{c.RED}Error:{c.NC} Data file not found: {data_path}", file=sys.stderr)
         sys.exit(1)
 
     # Load cases
-    cases = load_errors_from_csv(csv_path)
+    cases = load_errors_from_yaml(data_path)
 
     # Filter cases
     if args.id:
@@ -419,16 +429,20 @@ Examples:
     elif args.filter:
         filter_lower = args.filter.lower()
         cases = [
-            case for case in cases
+            case
+            for case in cases
             if filter_lower in case.id.lower() or filter_lower in case.language.lower()
         ]
         if not cases:
-            print(f"{c.RED}Error:{c.NC} No cases match filter: {args.filter}", file=sys.stderr)
+            print(
+                f"{c.RED}Error:{c.NC} No cases match filter: {args.filter}",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
     # Limit cases
     if args.limit:
-        cases = cases[:args.limit]
+        cases = cases[: args.limit]
 
     # Header
     if not args.json:
@@ -455,27 +469,31 @@ Examples:
     if args.json:
         output = {
             "binary": str(why_binary),
-            "csv": str(csv_path),
+            "data": str(data_path),
             "total": len(results),
             "results": [],
         }
         for r in results:
-            output["results"].append({
-                "id": r.case.id,
-                "language": r.case.language,
-                "error_type": r.case.error_type,
-                "success": r.success,
-                "no_error_detected": r.no_error_detected,
-                "has_summary": r.has_summary,
-                "has_explanation": r.has_explanation,
-                "has_suggestion": r.has_suggestion,
-                "inference_time_ms": r.inference_time_ms,
-                "why_output": r.why_output,
-            })
+            output["results"].append(
+                {
+                    "id": r.case.id,
+                    "language": r.case.language,
+                    "error_type": r.case.error_type,
+                    "success": r.success,
+                    "no_error_detected": r.no_error_detected,
+                    "has_summary": r.has_summary,
+                    "has_explanation": r.has_explanation,
+                    "has_suggestion": r.has_suggestion,
+                    "inference_time_ms": r.inference_time_ms,
+                    "why_output": r.why_output,
+                }
+            )
 
         output["stats"] = {
             "success": sum(1 for r in results if r.success),
-            "failed": sum(1 for r in results if not r.success and not r.no_error_detected),
+            "failed": sum(
+                1 for r in results if not r.success and not r.no_error_detected
+            ),
             "no_error_detected": sum(1 for r in results if r.no_error_detected),
             "avg_inference_ms": (
                 sum(r.inference_time_ms for r in results if r.inference_time_ms > 0)
@@ -489,8 +507,12 @@ Examples:
         success = sum(1 for r in results if r.success)
         failed = sum(1 for r in results if not r.success and not r.no_error_detected)
         no_error = sum(1 for r in results if r.no_error_detected)
-        total_time = sum(r.inference_time_ms for r in results if r.inference_time_ms > 0)
-        avg_time = total_time // max(1, sum(1 for r in results if r.inference_time_ms > 0))
+        total_time = sum(
+            r.inference_time_ms for r in results if r.inference_time_ms > 0
+        )
+        avg_time = total_time // max(
+            1, sum(1 for r in results if r.inference_time_ms > 0)
+        )
 
         print(f"\n{c.BOLD}Summary{c.NC}")
         print(f"  {c.GREEN}Success:{c.NC} {success}/{len(results)}")

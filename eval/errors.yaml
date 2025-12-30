@@ -1,0 +1,552 @@
+# Error test cases for eval script
+# Each entry has: id, language, error_type, error_text
+
+# Python errors
+- id: python_attr_error
+  language: Python
+  error_type: AttributeError
+  error_text: |
+    Traceback (most recent call last):
+      File "example.py", line 18, in process
+        return DataProcessor.value
+    AttributeError: 'NoneType' object has no attribute 'get'
+
+- id: python_key_error
+  language: Python
+  error_type: KeyError
+  error_text: |
+    Traceback (most recent call last):
+      File "api.py", line 12, in parse_api_response
+        "name": user["username"],
+    KeyError: 'username'
+
+- id: python_recursion
+  language: Python
+  error_type: RecursionError
+  error_text: |
+    Traceback (most recent call last):
+      File "math.py", line 7, in fibonacci
+        return fibonacci(n - 1) + fibonacci(n - 2)
+      [Previous line repeated 996 more times]
+    RecursionError: maximum recursion depth exceeded
+
+- id: python_import
+  language: Python
+  error_type: ModuleNotFoundError
+  error_text: |
+    Traceback (most recent call last):
+      File "app.py", line 2, in <module>
+        from circular_dependency import helper
+    ModuleNotFoundError: No module named 'circular_dependency'
+
+- id: python_type_error
+  language: Python
+  error_type: TypeError
+  error_text: |
+    Traceback (most recent call last):
+      File "calc.py", line 5, in add
+        return a + b
+    TypeError: unsupported operand type(s) for +: 'int' and 'str'
+
+- id: python_value_error
+  language: Python
+  error_type: ValueError
+  error_text: |
+    Traceback (most recent call last):
+      File "parse.py", line 3, in parse_int
+        return int(value)
+    ValueError: invalid literal for int() with base 10: 'hello'
+
+- id: python_index_error
+  language: Python
+  error_type: IndexError
+  error_text: |
+    Traceback (most recent call last):
+      File "list.py", line 4, in get_item
+        return items[10]
+    IndexError: list index out of range
+
+- id: python_zero_division
+  language: Python
+  error_type: ZeroDivisionError
+  error_text: |
+    Traceback (most recent call last):
+      File "math.py", line 3, in divide
+        return a / b
+    ZeroDivisionError: division by zero
+
+- id: python_file_not_found
+  language: Python
+  error_type: FileNotFoundError
+  error_text: |
+    Traceback (most recent call last):
+      File "io.py", line 2, in read_file
+        with open('missing.txt') as f:
+    FileNotFoundError: [Errno 2] No such file or directory: 'missing.txt'
+
+- id: python_permission_error
+  language: Python
+  error_type: PermissionError
+  error_text: |
+    Traceback (most recent call last):
+      File "io.py", line 2, in write_file
+        with open('/etc/passwd', 'w') as f:
+     PermissionError: [Errno 13] Permission denied: '/etc/passwd'
+
+# Bash errors
+- id: bash_unbound
+  language: Bash
+  error_type: UnboundVariable
+  error_text: "script.sh: line 9: DATABASE_URL: unbound variable"
+
+- id: bash_command_not_found
+  language: Bash
+  error_type: CommandNotFound
+  error_text: "script.sh: line 7: systemclt: command not found"
+
+- id: bash_syntax_error
+  language: Bash
+  error_type: SyntaxError
+  error_text: "script.sh: line 5: syntax error near unexpected token `fi'"
+
+- id: bash_permission_denied
+  language: Bash
+  error_type: PermissionDenied
+  error_text: "-bash: ./script.sh: Permission denied"
+
+- id: bash_no_such_file
+  language: Bash
+  error_type: NoSuchFile
+  error_text: "bash: /path/to/script.sh: No such file or directory"
+
+# JavaScript errors
+- id: js_undefined
+  language: JavaScript
+  error_type: TypeError
+  error_text: |
+    TypeError: Cannot read properties of undefined (reading 'theme')
+        at getUserTheme (app.js:14:34)
+        at displayDashboard (app.js:18:19)
+
+- id: js_null
+  language: JavaScript
+  error_type: TypeError
+  error_text: |
+    TypeError: Cannot read properties of null (reading 'map')
+        at processData (data.js:5:15)
+
+- id: js_not_a_function
+  language: JavaScript
+  error_type: TypeError
+  error_text: |
+    TypeError: callback is not a function
+        at fetchData (api.js:10:5)
+
+- id: js_reference_error
+  language: JavaScript
+  error_type: ReferenceError
+  error_text: |
+    ReferenceError: undefinedVariable is not defined
+        at main (app.js:3:5)
+
+- id: js_syntax_error
+  language: JavaScript
+  error_type: SyntaxError
+  error_text: "SyntaxError: Unexpected token '}' at line 15"
+
+- id: js_range_error
+  language: JavaScript
+  error_type: RangeError
+  error_text: "RangeError: Maximum call stack size exceeded"
+
+# Ruby errors
+- id: ruby_nil_error
+  language: Ruby
+  error_type: NoMethodError
+  error_text: |
+    example.rb:23:in `get_user_email': undefined method `email' for nil:NilClass (NoMethodError)
+    	from example.rb:28:in `<main>'
+
+- id: ruby_name_error
+  language: Ruby
+  error_type: NameError
+  error_text: "NameError: undefined local variable or method `user' for main:Object"
+
+- id: ruby_argument_error
+  language: Ruby
+  error_type: ArgumentError
+  error_text: "ArgumentError: wrong number of arguments (given 2, expected 1)"
+
+- id: ruby_load_error
+  language: Ruby
+  error_type: LoadError
+  error_text: "LoadError: cannot load such file -- missing_gem"
+
+# Go errors
+- id: go_nil_panic
+  language: Go
+  error_type: NilPointerPanic
+  error_text: |
+    panic: runtime error: invalid memory address or nil pointer dereference
+    [signal SIGSEGV: segmentation violation code=0x2 addr=0x0 pc=0x102e92bf8]
+
+    goroutine 1 [running]:
+    main.(*App).Connect(0x1400011af30)
+    	/app/main.go:23 +0x28
+
+- id: go_index_panic
+  language: Go
+  error_type: IndexOutOfRange
+  error_text: |
+    panic: runtime error: index out of range [5] with length 3
+
+    goroutine 1 [running]:
+    main.main()
+    	/app/main.go:8 +0x1c
+
+- id: go_type_assertion
+  language: Go
+  error_type: TypeAssertionPanic
+  error_text: "panic: interface conversion: interface {} is string, not int"
+
+- id: go_deadlock
+  language: Go
+  error_type: Deadlock
+  error_text: "fatal error: all goroutines are asleep - deadlock!"
+
+# Rust errors
+- id: rust_borrow
+  language: Rust
+  error_type: BorrowChecker
+  error_text: |
+    error[E0382]: borrow of moved value: `data`
+      --> src/main.rs:10:37
+       |
+     4 |     let data = vec![1, 2, 3, 4, 5];
+       |         ---- move occurs because `data` has type `Vec<i32>`, which does not implement the `Copy` trait
+     7 |     let processed = process_data(data);
+       |                                  ---- value moved here
+    10 |     println!("Original length: {}", data.len());
+       |                                     ^^^^ value borrowed here after move
+
+- id: rust_lifetime
+  language: Rust
+  error_type: LifetimeError
+  error_text: |
+    error[E0106]: missing lifetime specifier
+     --> src/lib.rs:5:16
+      |
+    5 | fn longest(x: &str, y: &str) -> &str {
+      |               ----     ----     ^ expected named lifetime parameter
+
+- id: rust_type_mismatch
+  language: Rust
+  error_type: TypeMismatch
+  error_text: |
+    error[E0308]: mismatched types
+     --> src/main.rs:3:20
+      |
+    3 |     let x: i32 = "hello";
+      |            ---   ^^^^^^^ expected `i32`, found `&str`
+
+- id: rust_trait_bound
+  language: Rust
+  error_type: TraitBound
+  error_text: |
+    error[E0277]: the trait bound `MyStruct: std::fmt::Display` is not satisfied
+     --> src/main.rs:5:20
+      |
+    5 |     println!("{}", my_struct);
+      |                    ^^^^^^^^^ `MyStruct` cannot be formatted with the default formatter
+
+# C errors
+- id: c_segfault
+  language: C
+  error_type: SegmentationFault
+  error_text: "Segmentation fault (core dumped)"
+
+- id: c_double_free
+  language: C
+  error_type: DoubleFree
+  error_text: |
+    free(): double free detected in tcache 2
+    Aborted (core dumped)
+
+- id: c_buffer_overflow
+  language: C
+  error_type: BufferOverflow
+  error_text: |
+    *** stack smashing detected ***: terminated
+    Aborted (core dumped)
+
+# Java errors
+- id: java_npe
+  language: Java
+  error_type: NullPointerException
+  error_text: |
+    Exception in thread "main" java.lang.NullPointerException: Cannot invoke method on null object
+    	at com.example.Main.getUserCity(Main.java:31)
+    	at com.example.Main.main(Main.java:37)
+
+- id: java_class_cast
+  language: Java
+  error_type: ClassCastException
+  error_text: "Exception in thread \"main\" java.lang.ClassCastException: class java.lang.String cannot be cast to class java.lang.Integer"
+
+- id: java_array_index
+  language: Java
+  error_type: ArrayIndexOutOfBoundsException
+  error_text: "Exception in thread \"main\" java.lang.ArrayIndexOutOfBoundsException: Index 10 out of bounds for length 5"
+
+- id: java_class_not_found
+  language: Java
+  error_type: ClassNotFoundException
+  error_text: "Exception in thread \"main\" java.lang.ClassNotFoundException: com.missing.MyClass"
+
+# TypeScript errors
+- id: typescript_null
+  language: TypeScript
+  error_type: TypeErrorNull
+  error_text: |
+    error TS2345: Argument of type 'User | null' is not assignable to parameter of type 'User'.
+      Type 'null' is not assignable to type 'User'.
+
+- id: typescript_property
+  language: TypeScript
+  error_type: PropertyMissing
+  error_text: "error TS2339: Property 'email' does not exist on type 'User'."
+
+- id: typescript_type_mismatch
+  language: TypeScript
+  error_type: TypeMismatch
+  error_text: "error TS2322: Type 'string' is not assignable to type 'number'."
+
+# Nix errors
+- id: nix_undefined_var
+  language: Nix
+  error_type: UndefinedVariable
+  error_text: |
+    error: undefined variable 'pkgss'
+           at /etc/nixos/configuration.nix:15:5:
+               14|   environment.systemPackages = with pkgs; [
+               15|     pkgss.vim
+                  |     ^
+               16|   ];
+
+- id: nix_missing_attr
+  language: Nix
+  error_type: MissingAttribute
+  error_text: |
+    error: attribute 'vimm' missing
+           at /etc/nixos/configuration.nix:15:5:
+               14|   environment.systemPackages = with pkgs; [
+               15|     pkgs.vimm
+                  |     ^
+               16|   ];
+
+- id: nix_infinite_recursion
+  language: Nix
+  error_type: InfiniteRecursion
+  error_text: |
+    error: infinite recursion encountered
+           at /nix/store/.../lib/modules.nix:500:28:
+              499|         # Type-check the remaining definitions
+              500|           builtins.addErrorContext "while evaluating the attribute '${key}'"
+                  |                            ^
+
+- id: nix_type_error
+  language: Nix
+  error_type: TypeError
+  error_text: |
+    error: value is a string while a set was expected
+           at /etc/nixos/configuration.nix:10:5:
+                9|   services.nginx = {
+               10|     enable = "yes";
+                  |     ^
+               11|   };
+
+- id: nix_syntax_error
+  language: Nix
+  error_type: SyntaxError
+  error_text: |
+    error: syntax error, unexpected ';', expecting ')'
+           at /etc/nixos/configuration.nix:5:10:
+                4|   let
+                5|     foo = bar;
+                  |          ^
+                6|   in
+
+- id: nix_hash_mismatch
+  language: Nix
+  error_type: HashMismatch
+  error_text: |
+    error: hash mismatch in fixed-output derivation '/nix/store/...-source':
+             specified: sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+                got:    sha256-xyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ab=
+
+- id: nix_build_failed
+  language: Nix
+  error_type: BuildFailed
+  error_text: |
+    error: builder for '/nix/store/...-my-package.drv' failed with exit code 1
+           last 10 log lines:
+           > configure: error: C compiler cannot create executables
+
+- id: nix_collision
+  language: Nix
+  error_type: FileCollision
+  error_text: "error: collision between `/nix/store/...-package-a/bin/app' and `/nix/store/...-package-b/bin/app'"
+
+- id: nix_flake_not_found
+  language: Nix
+  error_type: FlakeNotFound
+  error_text: "error: cannot find flake 'github:nonexistent/repo' in the flake registries"
+
+- id: nix_eval_error
+  language: Nix
+  error_type: EvaluationError
+  error_text: "error: evaluation aborted with the following error message: 'Option services.unknownService does not exist'"
+
+# SQL errors
+- id: sql_syntax
+  language: SQL
+  error_type: SyntaxError
+  error_text: "ERROR 1064 (42000): You have an error in your SQL syntax; check the manual near 'FORM users WHERE id = 1' at line 1"
+
+- id: sql_column_not_found
+  language: SQL
+  error_type: ColumnNotFound
+  error_text: "ERROR 1054 (42S22): Unknown column 'emial' in 'field list'"
+
+- id: sql_duplicate_key
+  language: SQL
+  error_type: DuplicateKey
+  error_text: "ERROR 1062 (23000): Duplicate entry 'user@example.com' for key 'users.email'"
+
+- id: sql_foreign_key
+  language: SQL
+  error_type: ForeignKeyViolation
+  error_text: "ERROR 1452 (23000): Cannot add or update a child row: a foreign key constraint fails"
+
+# Docker errors
+- id: docker_image_not_found
+  language: Docker
+  error_type: ImageNotFound
+  error_text: "docker: Error response from daemon: pull access denied for myapp, repository does not exist or may require 'docker login'"
+
+- id: docker_port_in_use
+  language: Docker
+  error_type: PortInUse
+  error_text: "docker: Error response from daemon: driver failed programming external connectivity: Bind for 0.0.0.0:3000 failed: port is already allocated"
+
+- id: docker_no_space
+  language: Docker
+  error_type: NoSpace
+  error_text: "docker: Error response from daemon: no space left on device"
+
+# Git errors
+- id: git_merge_conflict
+  language: Git
+  error_type: MergeConflict
+  error_text: |
+    CONFLICT (content): Merge conflict in src/main.rs
+    Automatic merge failed; fix conflicts and then commit the result.
+
+- id: git_not_a_repo
+  language: Git
+  error_type: NotARepository
+  error_text: "fatal: not a git repository (or any of the parent directories): .git"
+
+- id: git_branch_not_found
+  language: Git
+  error_type: BranchNotFound
+  error_text: "error: pathspec 'feature-xyz' did not match any file(s) known to git"
+
+# npm errors
+- id: npm_enoent
+  language: npm
+  error_type: ENOENT
+  error_text: "npm ERR! enoent ENOENT: no such file or directory, open '/app/package.json'"
+
+- id: npm_peer_dep
+  language: npm
+  error_type: PeerDependency
+  error_text: |
+    npm ERR! ERESOLVE unable to resolve dependency tree
+    npm ERR! peer dep missing: react@^18.0.0, required by react-dom@18.2.0
+
+# Cargo errors
+- id: cargo_version
+  language: Cargo
+  error_type: VersionConflict
+  error_text: |
+    error: failed to select a version for `serde`.
+        ... required by package `my-app v0.1.0`
+    versions that meet the requirements `^2.0` are: 2.0.0
+    all possible versions conflict with previously selected packages.
+
+# Build tool errors
+- id: make_error
+  language: Make
+  error_type: Error
+  error_text: "make: *** [Makefile:15: build] Error 1"
+
+- id: cmake_not_found
+  language: CMake
+  error_type: PackageNotFound
+  error_text: |
+    CMake Error at CMakeLists.txt:10 (find_package):
+      By not providing "FindOpenSSL.cmake" in CMAKE_MODULE_PATH this project has asked CMake to find a package configuration file provided by "OpenSSL", but CMake did not find one.
+
+# GCC errors
+- id: gcc_undefined_ref
+  language: GCC
+  error_type: UndefinedReference
+  error_text: |
+    /usr/bin/ld: main.o: in function `main':
+    main.c:(.text+0x15): undefined reference to `missing_function'
+    collect2: error: ld returned 1 exit status
+
+- id: gcc_implicit_decl
+  language: GCC
+  error_type: ImplicitDeclaration
+  error_text: "main.c:5:5: warning: implicit declaration of function 'printf' [-Wimplicit-function-declaration]"
+
+# Network errors
+- id: curl_connection_refused
+  language: curl
+  error_type: ConnectionRefused
+  error_text: "curl: (7) Failed to connect to localhost port 8080: Connection refused"
+
+- id: curl_ssl_error
+  language: curl
+  error_type: SSLError
+  error_text: "curl: (60) SSL certificate problem: unable to get local issuer certificate"
+
+# SSH errors
+- id: ssh_permission_denied
+  language: SSH
+  error_type: PermissionDenied
+  error_text: "Permission denied (publickey,gssapi-keyex,gssapi-with-mic)."
+
+- id: ssh_host_key
+  language: SSH
+  error_type: HostKeyVerification
+  error_text: |
+    @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+    @ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @
+    @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+# Kubernetes errors
+- id: kubernetes_crashloop
+  language: Kubernetes
+  error_type: CrashLoopBackOff
+  error_text: 'Error from server: container "app" in pod "my-pod" is waiting to start: CrashLoopBackOff'
+
+- id: kubernetes_oom
+  language: Kubernetes
+  error_type: OOMKilled
+  error_text: |
+    Last State: Terminated
+        Reason: OOMKilled
+        Exit Code: 137
