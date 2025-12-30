@@ -50,7 +50,7 @@ jobs:
           - system: aarch64-darwin
             runner: macos-latest
           - system: x86_64-darwin
-            runner: macos-13
+            runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6

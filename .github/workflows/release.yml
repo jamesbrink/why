@@ -24,7 +24,7 @@ jobs:
             runner: macos-latest
             artifact: why-aarch64-darwin
           - system: x86_64-darwin
-            runner: macos-13
+            runner: macos-15-intel
             artifact: why-x86_64-darwin
     runs-on: ${{ matrix.runner }}
     steps:
