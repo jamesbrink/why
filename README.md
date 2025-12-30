@@ -1,6 +1,7 @@
 # why
 
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![Nix Flake](https://img.shields.io/badge/Nix-Flake-5277C3?logo=nixos)](https://nixos.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Model: Qwen2.5-Coder](https://img.shields.io/badge/Model-Qwen2.5--Coder-green.svg)](https://github.com/QwenLM/Qwen2.5-Coder)
 
