@@ -39,7 +39,7 @@ See the [examples/](examples/) directory for sample scripts in various languages
 
 - **Single binary** - Model embedded right in the executable. One file, zero dependencies.
 - **Offline** - Works on airplanes, in bunkers, or when your ISP decides to take a nap.
-- **Fast** - Local inference with Metal/CUDA acceleration. No round trips to the cloud.
+- **Fast** - Local inference with Metal (macOS) or Vulkan (Linux). CPU-only works everywhere.
 - **Structured output** - Clean, colored terminal output or JSON for scripting.
 - **Shell completions** - Tab completion for bash, zsh, fish, and friends.
 
@@ -52,6 +52,8 @@ Grab the embedded binary from releases (includes the model, ~400MB).
 ### Build from Source
 
 Requires [Nix](https://nixos.org/) with flakes enabled and [git-lfs](https://git-lfs.com/) for the model.
+
+On Linux, the flake enables Vulkan GPU acceleration by default (works on NVIDIA/AMD/Intel). CPU-only still works without Vulkan. On macOS, it uses Metal.
 
 ```bash
 git clone https://github.com/jamesbrink/why.git

@@ -16,6 +16,7 @@ use std::fs::File;
 use std::io::{self, BufRead, IsTerminal, Read, Seek, SeekFrom};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Magic marker written before embedded model
 const MAGIC: &[u8; 8] = b"WHYMODEL";
@@ -343,8 +344,17 @@ fn run_inference(model_path: &PathBuf, prompt: &str) -> Result<String> {
 
     ctx.decode(&mut batch)?;
 
-    let mut sampler =
-        LlamaSampler::chain_simple([LlamaSampler::dist(1234), LlamaSampler::greedy()]);
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let seed = (seed ^ (seed >> 32)) as u32;
+    let mut sampler = LlamaSampler::chain_simple([
+        LlamaSampler::top_k(40),
+        LlamaSampler::top_p(0.9, 1),
+        LlamaSampler::temp(0.7),
+        LlamaSampler::dist(seed),
+    ]);
 
     let mut decoder = encoding_rs::UTF_8.new_decoder();
     let max_gen_tokens = 512;

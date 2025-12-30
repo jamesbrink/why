@@ -17,7 +17,6 @@
       let
         pkgs = import nixpkgs {
           inherit system;
-          config.allowUnfree = true;  # Only for CUDA packages, doesn't trigger rebuilds
         };
 
         isDarwin = pkgs.stdenv.isDarwin;
@@ -32,9 +31,9 @@
         qwen-model = ./qwen2.5-coder-0.5b.gguf;
 
         # GPU features based on platform
-        # Linux: CUDA (NVIDIA) + Vulkan (AMD/Intel)
+        # Linux: Vulkan (AMD/Intel/NVIDIA via Vulkan drivers)
         # macOS: Metal (Apple GPU)
-        gpuFeatures = if isDarwin then [ "metal" ] else [ "cuda" "vulkan" ];
+        gpuFeatures = if isDarwin then [ "metal" ] else [ "vulkan" ];
         gpuFeaturesStr = builtins.concatStringsSep "," gpuFeatures;
 
         # Platform-specific native build inputs for llama-cpp-sys-2
@@ -45,11 +44,7 @@
         ];
 
         linuxBuildInputs = with pkgs; [
-          # CUDA support (NVIDIA GPUs)
-          cudaPackages.cuda_nvcc
-          cudaPackages.cuda_cudart
-          cudaPackages.libcublas
-          # Vulkan support (AMD/Intel GPUs)
+          # Vulkan support (AMD/Intel/NVIDIA)
           vulkan-headers
           vulkan-loader
           shaderc
@@ -72,7 +67,6 @@
             cmake
             rustPlatform.bindgenHook
           ] ++ (if isLinux then [
-            cudaPackages.cuda_nvcc
             # Vulkan shader compiler (glslc) - must be in nativeBuildInputs for CMake to find it
             shaderc
           ] else []);
@@ -219,9 +213,6 @@
             darwin.cctools
           ] else [
             # Linux GPU support
-            cudaPackages.cuda_nvcc
-            cudaPackages.cuda_cudart
-            cudaPackages.libcublas
             vulkan-headers
             vulkan-loader
             shaderc
@@ -229,9 +220,6 @@
           ]);
 
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-
-          # Pass CUDA library paths to rustc linker for static libs
-          RUSTFLAGS = pkgs.lib.optionalString isLinux "-L ${pkgs.cudaPackages.cuda_cudart}/lib -L ${pkgs.cudaPackages.libcublas}/lib";
 
           shellHook = ''
             echo "GPU support: ${gpuFeaturesStr}"
