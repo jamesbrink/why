@@ -135,10 +135,11 @@ why --completions fish > ~/.config/fish/completions/why.fish
 ## Nix Build Targets
 
 ```bash
-nix build              # Default (Qwen2.5-Coder, ~680MB)
-nix build .#cli        # CLI only, no model (~4.5MB)
-nix build .#why-qwen3  # Qwen3 0.6B variant (~644MB)
-nix build .#why-smollm2 # SmolLM2 135M variant (~149MB)
+nix build               # Default (Qwen2.5-Coder, ~680MB)
+nix build .#cli         # CLI only, no model (~4.5MB)
+nix build .#why-qwen3   # Qwen3 0.6B (~644MB)
+nix build .#why-gemma3  # Gemma 3 270M (~297MB)
+nix build .#why-smollm2 # SmolLM2 135M (~149MB)
 
 # Use CLI with external model
 nix run .#cli -- --model /path/to/model.gguf "error"
@@ -213,7 +214,8 @@ Available model variants (all Apache 2.0 licensed):
 | Model | Size | Note |
 | ----- | ---- | ---- |
 | [Qwen2.5-Coder 0.5B](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF) | ~530MB | Default |
-| [Qwen3 0.6B](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF) | ~639MB | Newest |
+| [Qwen3 0.6B](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF) | ~639MB | Newest Qwen |
+| [Gemma 3 270M](https://huggingface.co/unsloth/gemma-3-270m-it-GGUF) | ~292MB | Google |
 | [SmolLM2 135M](https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF) | ~145MB | Smallest |
 
 When distributing binaries with an embedded model, both the MIT (CLI) and Apache 2.0 (model) licenses apply.

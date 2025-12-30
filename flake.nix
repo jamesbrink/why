@@ -57,6 +57,14 @@
             sha256 = "10xsdfq2wx0685kd7xx9hw4xha0jkcdmi60xqlf784vrdxqra4ss";
             description = "SmolLM2 135M Instruct (Q8_0) - ~145MB, fastest/smallest";
           };
+
+          # Gemma 3 270M - Google's small model
+          gemma3-270m = {
+            name = "gemma-3-270m-it-Q8_0.gguf";
+            url = "https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q8_0.gguf";
+            sha256 = "164nkcwi7b8aca9a45qgs2w8mwhz1z11qz1wsnqw2y9gkwasamni";
+            description = "Gemma 3 270M Instruct (Q8_0) - ~292MB, Google";
+          };
         };
 
         # Default model selection
@@ -221,6 +229,7 @@
             echo "  qwen2.5-coder-0.5b  - ${models.qwen2_5-coder-0_5b.description}"
             echo "  qwen3-0.6b          - ${models.qwen3-0_6b.description}"
             echo "  smollm2-135m        - ${models.smollm2-135m.description}"
+            echo "  gemma3-270m         - ${models.gemma3-270m.description}"
             echo ""
             echo "Or provide a direct URL to a GGUF file"
           }
@@ -242,6 +251,10 @@
             smollm2-135m|smollm2|smol)
               URL="${models.smollm2-135m.url}"
               NAME="${models.smollm2-135m.name}"
+              ;;
+            gemma3-270m|gemma3|gemma)
+              URL="${models.gemma3-270m.url}"
+              NAME="${models.gemma3-270m.name}"
               ;;
             http*://*.gguf)
               URL="$1"
@@ -291,6 +304,12 @@
           why-smollm2 = mkEmbeddedWhy {
             model = models.smollm2-135m;
             pname = "why-smollm2";
+          };
+
+          # Gemma 3 variant - Google's small model
+          why-gemma3 = mkEmbeddedWhy {
+            model = models.gemma3-270m;
+            pname = "why-gemma3";
           };
         };
 
