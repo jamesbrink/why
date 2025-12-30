@@ -183,6 +183,12 @@
             openssl
             cmake
 
+            # bindgen needs this to find C headers (critical for llama-cpp-sys-2)
+            rustPlatform.bindgenHook
+
+            # Used by embed.sh for size calculations
+            bc
+
             # Helper scripts
             buildScript
           ] ++ (if isDarwin then [
