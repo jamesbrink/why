@@ -217,13 +217,13 @@ This project is licensed under the [MIT License](LICENSE).
 
 ### Models
 
-Available model variants (all Apache 2.0 licensed):
+Available model variants:
 
-| Model | Size | Note |
-| ----- | ---- | ---- |
-| [Qwen2.5-Coder 0.5B](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF) | ~530MB | Default |
-| [Qwen3 0.6B](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF) | ~639MB | Newest Qwen |
-| [Gemma 3 270M](https://huggingface.co/unsloth/gemma-3-270m-it-GGUF) | ~292MB | Google |
-| [SmolLM2 135M](https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF) | ~145MB | Smallest |
+| Model | Size | License | Note |
+| ----- | ---- | ------- | ---- |
+| [Qwen2.5-Coder 0.5B](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF) | ~530MB | Apache 2.0 | Default |
+| [Qwen3 0.6B](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF) | ~639MB | Apache 2.0 | Newest Qwen |
+| [Gemma 3 270M](https://huggingface.co/unsloth/gemma-3-270m-it-GGUF) | ~292MB | [Gemma Terms](https://ai.google.dev/gemma/terms) | Google |
+| [SmolLM2 135M](https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF) | ~145MB | Apache 2.0 | Smallest |
 
-When distributing binaries with an embedded model, both the MIT (CLI) and Apache 2.0 (model) licenses apply.
+When distributing binaries with an embedded model, both the MIT (CLI) and model licenses apply. Note that Gemma models use Google's custom terms, not Apache 2.0.
