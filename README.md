@@ -78,11 +78,8 @@ why --completions fish > ~/.config/fish/completions/why.fish
 ## Nix Build Targets
 
 ```bash
-# Build embedded binary (default) - includes model (~400MB)
+# Build embedded binary (~400MB with model)
 nix build
-
-# Build CLI only (no embedded model)
-nix build .#why
 
 # Run directly
 nix run . -- "segmentation fault"
