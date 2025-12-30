@@ -46,7 +46,7 @@ jobs:
           chmod +x artifacts/${{ matrix.artifact }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
           path: artifacts/${{ matrix.artifact }}
