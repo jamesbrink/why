@@ -29,8 +29,7 @@ go run examples/go_nil_panic.go 2>&1 | why
 javac examples/java_npe.java && java -cp examples java_npe 2>&1 | why
 
 # Rust (compiler error, no runtime needed)
-# Note: .rs.txt extension avoids cargo trying to compile it as an example
-rustc examples/rust_borrow.rs.txt 2>&1 | why
+rustc examples/rust_borrow.rs 2>&1 | why
 
 # TypeScript (type checker error)
 tsc --strict examples/typescript_type_error.ts 2>&1 | why
@@ -51,5 +50,5 @@ tsc --strict examples/typescript_type_error.ts 2>&1 | why
 | `c_segfault.c` | C | Segmentation fault (NULL deref) |
 | `go_nil_panic.go` | Go | Panic (nil pointer dereference) |
 | `java_npe.java` | Java | NullPointerException |
-| `rust_borrow.rs.txt` | Rust | Borrow checker (use after move) |
+| `rust_borrow.rs` | Rust | Borrow checker (use after move) |
 | `typescript_type_error.ts` | TypeScript | Type error (null assignment) |
