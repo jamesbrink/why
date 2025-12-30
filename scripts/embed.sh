@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Embed a GGUF model into the why binary
 # Usage: ./scripts/embed.sh <binary> <model.gguf> [output] [family]
-# family: qwen (default), gemma, or smollm
+# family: qwen, gemma, or smollm (auto-detected from filename if not specified)
 
 set -euo pipefail
 
 BINARY="${1:?Usage: embed.sh <binary> <model.gguf> [output] [family]}"
 MODEL="${2:?Usage: embed.sh <binary> <model.gguf> [output] [family]}"
 OUTPUT="${3:-${BINARY}-embedded}"
-FAMILY="${4:-qwen}"  # Default to qwen
+FAMILY="${4:-}"  # Auto-detect if not provided
 
 if [[ ! -f "$BINARY" ]]; then
     echo "Error: Binary not found: $BINARY" >&2
@@ -18,6 +18,25 @@ fi
 if [[ ! -f "$MODEL" ]]; then
     echo "Error: Model not found: $MODEL" >&2
     exit 1
+fi
+
+# Auto-detect family from model filename if not specified
+if [[ -z "$FAMILY" ]]; then
+    MODEL_LOWER=$(echo "$MODEL" | tr '[:upper:]' '[:lower:]')
+    case "$MODEL_LOWER" in
+        *gemma*)
+            FAMILY="gemma"
+            echo "Auto-detected family: gemma"
+            ;;
+        *smol*)
+            FAMILY="smollm"
+            echo "Auto-detected family: smollm"
+            ;;
+        *)
+            FAMILY="qwen"
+            echo "Auto-detected family: qwen (default)"
+            ;;
+    esac
 fi
 
 # Validate family

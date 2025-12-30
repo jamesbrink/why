@@ -63,7 +63,7 @@ The template is selected based on: CLI `--template` flag > embedded family byte 
 
 ### Key Components (src/main.rs)
 
-- **CLI parsing**: Uses clap with `--json`, `--debug`, `--stats`, `--model`, `--template`, `--completions` flags
+- **CLI parsing**: Uses clap with `--json`, `--debug`, `--stats`, `--model`, `--template`, `--list-models`, `--completions` flags
 - **Input handling**: Accepts error as args or via stdin pipe
 - **Model family detection**: Auto-detects from embedded trailer or filename, can be overridden with `--template`
 - **Prompt building**: Selects appropriate template based on model family

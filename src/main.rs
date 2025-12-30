@@ -12,6 +12,7 @@ use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::{send_logs_to_tracing, LogOptions};
 use serde::Serialize;
 use std::env;
+use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, IsTerminal, Read, Seek, SeekFrom};
 use std::num::NonZeroU32;
@@ -19,15 +20,25 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Model family for template selection
+/// Model family for prompt template selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ModelFamily {
-    /// Qwen models (Qwen2.5, Qwen3) - uses ChatML format
+    /// Qwen models - uses ChatML format
     Qwen,
-    /// Gemma models - uses <start_of_turn> format
+    /// Gemma models - uses Gemma format
     Gemma,
     /// SmolLM models - uses ChatML format
     Smollm,
+}
+
+impl fmt::Display for ModelFamily {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ModelFamily::Qwen => write!(f, "qwen (ChatML)"),
+            ModelFamily::Gemma => write!(f, "gemma (Gemma format)"),
+            ModelFamily::Smollm => write!(f, "smollm (ChatML)"),
+        }
+    }
 }
 
 /// Magic marker written before embedded model
@@ -68,6 +79,10 @@ struct Cli {
     /// Model family for prompt template (auto-detected if not specified)
     #[arg(long, short = 't', value_enum, value_name = "FAMILY")]
     template: Option<ModelFamily>,
+
+    /// List available model variants and exit
+    #[arg(long)]
+    list_models: bool,
 
     /// Generate shell completions
     #[arg(long, value_enum, value_name = "SHELL")]
@@ -268,6 +283,7 @@ fn get_model_path(cli_model: Option<&PathBuf>) -> Result<ModelPathInfo> {
     // Fallback: look for model file in current dir or next to exe
     let candidates = [
         PathBuf::from("model.gguf"),
+        PathBuf::from("qwen2.5-coder-0.5b-instruct-q8_0.gguf"),
         env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.join("model.gguf")))
@@ -863,6 +879,67 @@ fn print_completions(shell: Shell) {
     generate(shell, &mut cmd, "why", &mut io::stdout());
 }
 
+#[allow(clippy::print_literal)]
+fn print_model_list() {
+    println!("{}", "Available Model Variants".bold());
+    println!();
+    println!(
+        "These models can be built with {} or used with {}:",
+        "nix build .#<variant>".cyan(),
+        "--model".cyan()
+    );
+    println!();
+    println!(
+        "  {:<20} {:<12} {}",
+        "Variant".blue().bold(),
+        "Size".blue().bold(),
+        "Description".blue().bold()
+    );
+    println!(
+        "  {:<20} {:<12} {}",
+        "───────────────────", "──────────", "─────────────────────────────────────"
+    );
+    println!(
+        "  {:<20} {:<12} {} {}",
+        "why-qwen2_5-coder",
+        "~530MB",
+        "Qwen2.5-Coder 0.5B - best quality",
+        "(default)".dimmed()
+    );
+    println!(
+        "  {:<20} {:<12} {}",
+        "why-qwen3", "~639MB", "Qwen3 0.6B - newest Qwen"
+    );
+    println!(
+        "  {:<20} {:<12} {}",
+        "why-gemma3", "~292MB", "Gemma 3 270M - Google"
+    );
+    println!(
+        "  {:<20} {:<12} {}",
+        "why-smollm2", "~145MB", "SmolLM2 135M - smallest/fastest"
+    );
+    println!();
+    println!("{}", "Template Families".bold());
+    println!();
+    println!(
+        "  Use {} to override auto-detection:",
+        "--template <family>".cyan()
+    );
+    println!();
+    println!(
+        "  {:<12} {}",
+        "qwen".green(),
+        "ChatML format (Qwen, SmolLM)"
+    );
+    println!(
+        "  {:<12} {}",
+        "gemma".green(),
+        "Gemma format (<start_of_turn>)"
+    );
+    println!("  {:<12} {}", "smollm".green(), "ChatML format (alias)");
+    println!();
+}
+
 fn main() -> Result<()> {
     // Suppress verbose llama.cpp logs immediately
     send_logs_to_tracing(LogOptions::default().with_logs_enabled(false));
@@ -875,17 +952,28 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Handle --list-models
+    if cli.list_models {
+        print_model_list();
+        return Ok(());
+    }
+
     let input = get_input(&cli)?;
     let model_info = get_model_path(cli.model.as_ref())?;
     let model_path = &model_info.path;
 
     // Determine model family: CLI override > embedded family > auto-detect from path
     let (model_family, family_source) = if let Some(family) = cli.template {
-        (family, "override")
+        (family, "override".to_string())
     } else if let Some(family) = model_info.embedded_family {
-        (family, "embedded")
+        (family, "embedded".to_string())
     } else {
-        (detect_model_family(model_path), "auto-detected")
+        let detected = detect_model_family(model_path);
+        let filename = model_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        (detected, format!("auto-detected from '{}'", filename))
     };
     let prompt = build_prompt(&input, model_family);
 
@@ -902,7 +990,7 @@ fn main() -> Result<()> {
         print_debug_section("Prompt", &prompt, Some(format!("({} chars)", prompt.len())));
         eprintln!("{}", "=== DEBUG: Model ===".yellow().bold());
         eprintln!(
-            "{} {:?} ({})",
+            "{} {} ({})",
             "Family:".blue().bold(),
             model_family,
             family_source
@@ -1143,6 +1231,13 @@ mod tests {
     fn test_detect_model_family_default() {
         let path = PathBuf::from("/path/to/random-model.gguf");
         assert_eq!(detect_model_family(&path), ModelFamily::Qwen); // Default
+    }
+
+    #[test]
+    fn test_model_family_display() {
+        assert_eq!(format!("{}", ModelFamily::Qwen), "qwen (ChatML)");
+        assert_eq!(format!("{}", ModelFamily::Gemma), "gemma (Gemma format)");
+        assert_eq!(format!("{}", ModelFamily::Smollm), "smollm (ChatML)");
     }
 
     #[test]
