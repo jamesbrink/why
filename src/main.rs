@@ -53,13 +53,22 @@ struct ErrorExplanation {
     suggestion: String,
 }
 
+fn format_error(message: &str, tip: Option<&str>) -> String {
+    let mut output = format!("{} {}", "Error:".red().bold(), message);
+    if let Some(tip) = tip {
+        output.push('\n');
+        output.push_str(&format!("{} {}", "Tip:".blue().bold(), tip));
+    }
+    output
+}
+
 fn find_embedded_model() -> Result<(u64, u64)> {
     let exe_path = env::current_exe().context("failed to get executable path")?;
     let mut file = File::open(&exe_path).context("failed to open self")?;
     let file_len = file.metadata()?.len();
 
     if file_len < 24 {
-        bail!("no embedded model found");
+        bail!(format_error("No embedded model found.", None));
     }
 
     file.seek(SeekFrom::End(-24))?;
@@ -67,7 +76,10 @@ fn find_embedded_model() -> Result<(u64, u64)> {
     file.read_exact(&mut trailer)?;
 
     if &trailer[0..8] != MAGIC {
-        bail!("no embedded model found (missing magic)");
+        bail!(format_error(
+            "No embedded model found (missing magic).",
+            None
+        ));
     }
 
     let offset = u64::from_le_bytes(trailer[8..16].try_into().unwrap());
@@ -110,11 +122,14 @@ fn get_model_path() -> Result<PathBuf> {
         }
     }
 
-    bail!(
-        "No model found. Either:\n\
-         1. Place qwen2.5-coder-0.5b.gguf in current directory\n\
-         2. Embed model: ./embed.sh why model.gguf"
-    )
+    let message = format!(
+        "{} {}\n{} {}\n  1. Place qwen2.5-coder-0.5b.gguf in current directory\n  2. Embed model: ./scripts/embed.sh target/release/why model.gguf why-embedded",
+        "Error:".red().bold(),
+        "No model found.",
+        "Tip:".blue().bold(),
+        "Either:"
+    );
+    bail!(message)
 }
 
 fn get_input(cli: &Cli) -> Result<String> {
@@ -137,10 +152,14 @@ fn get_input(cli: &Cli) -> Result<String> {
         }
     }
 
-    bail!(
-        "No input provided. Usage: why <error message>\n\
-         Tip: Use 2>&1 to capture stderr: command 2>&1 | why"
-    )
+    let message = format!(
+        "{} {}\n{} {}",
+        "Error:".red().bold(),
+        "No input provided. Usage: why <error message>",
+        "Tip:".blue().bold(),
+        "Use 2>&1 to capture stderr: command 2>&1 | why".dimmed()
+    );
+    bail!(message)
 }
 
 const PROMPT_TEMPLATE: &str = include_str!("prompt.txt");
