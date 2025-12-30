@@ -31,6 +31,8 @@ python script.py 2>&1 | why
 why --json "null pointer exception"
 ```
 
+See the [examples/](examples/) directory for sample scripts in various languages that produce common errors.
+
 ## Features
 
 - **Single binary** - Model embedded right in the executable. One file, zero dependencies.

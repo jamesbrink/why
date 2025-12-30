@@ -375,7 +375,10 @@ fn main() -> Result<()> {
     if cli.debug {
         eprintln!("{}", "=== DEBUG: Input ===".yellow().bold());
         eprintln!("{input}");
-        eprintln!("{}", format!("({} chars, {} lines)", input.len(), input.lines().count()).dimmed());
+        eprintln!(
+            "{}",
+            format!("({} chars, {} lines)", input.len(), input.lines().count()).dimmed()
+        );
         eprintln!();
         eprintln!("{}", "=== DEBUG: Prompt ===".yellow().bold());
         eprintln!("{prompt}");
@@ -388,7 +391,15 @@ fn main() -> Result<()> {
     if cli.debug {
         eprintln!("{}", "=== DEBUG: Raw Response ===".yellow().bold());
         eprintln!("{response}");
-        eprintln!("{}", format!("({} chars, {} lines)", response.len(), response.lines().count()).dimmed());
+        eprintln!(
+            "{}",
+            format!(
+                "({} chars, {} lines)",
+                response.len(),
+                response.lines().count()
+            )
+            .dimmed()
+        );
         eprintln!();
     }
 
