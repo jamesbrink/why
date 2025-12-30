@@ -5,12 +5,14 @@ on:
     branches: [main]
     paths-ignore:
       - '**.md'
+      - '**.gif'
       - 'examples/**'
       - '.github/dependabot.yml'
   pull_request:
     branches: [main]
     paths-ignore:
       - '**.md'
+      - '**.gif'
       - 'examples/**'
       - '.github/dependabot.yml'
 
