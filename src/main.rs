@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, Parser, ValueEnum};
 use clap_complete::{generate, Shell};
 use colored::Colorize;
 use llama_cpp_2::context::params::LlamaContextParams;
@@ -12,12 +12,34 @@ use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::{send_logs_to_tracing, LogOptions};
 use serde::Serialize;
 use std::env;
+use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, IsTerminal, Read, Seek, SeekFrom};
 use std::num::NonZeroU32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Model family for prompt template selection
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ModelFamily {
+    /// Qwen models - uses ChatML format
+    Qwen,
+    /// Gemma models - uses Gemma format
+    Gemma,
+    /// SmolLM models - uses ChatML format
+    Smollm,
+}
+
+impl fmt::Display for ModelFamily {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ModelFamily::Qwen => write!(f, "qwen (ChatML)"),
+            ModelFamily::Gemma => write!(f, "gemma (Gemma format)"),
+            ModelFamily::Smollm => write!(f, "smollm (ChatML)"),
+        }
+    }
+}
 
 /// Magic marker written before embedded model
 const MAGIC: &[u8; 8] = b"WHYMODEL";
@@ -49,6 +71,18 @@ struct Cli {
     /// Show performance stats
     #[arg(long)]
     stats: bool,
+
+    /// Path to GGUF model file (overrides embedded model)
+    #[arg(long, short = 'm', value_name = "PATH")]
+    model: Option<PathBuf>,
+
+    /// Model family for prompt template (auto-detected if not specified)
+    #[arg(long, short = 't', value_enum, value_name = "FAMILY")]
+    template: Option<ModelFamily>,
+
+    /// List available model variants and exit
+    #[arg(long)]
+    list_models: bool,
 
     /// Generate shell completions
     #[arg(long, value_enum, value_name = "SHELL")]
@@ -150,54 +184,113 @@ fn print_stats(stats: &InferenceStats) {
     println!();
 }
 
-fn find_embedded_model() -> Result<(u64, u64)> {
+/// Embedded model info: offset, size, and optional model family
+struct EmbeddedModelInfo {
+    offset: u64,
+    size: u64,
+    family: Option<ModelFamily>,
+}
+
+fn find_embedded_model() -> Result<EmbeddedModelInfo> {
     let exe_path = env::current_exe().context("failed to get executable path")?;
     let mut file = File::open(&exe_path).context("failed to open self")?;
     let file_len = file.metadata()?.len();
 
-    if file_len < 24 {
-        bail!(format_error("No embedded model found.", None));
+    // Try new 25-byte trailer format first (with family byte)
+    // Note: This correctly distinguishes from old 24-byte format because:
+    // - New format: magic is at End(-25), so bytes [0..8] contain "WHYMODEL"
+    // - Old format: magic is at End(-24), so when reading 25 bytes from End(-25),
+    //   the magic would be at bytes [1..9], not [0..8], causing the check to fail
+    //   and fall through to the old format handler below.
+    if file_len >= 25 {
+        file.seek(SeekFrom::End(-25))?;
+        let mut trailer = [0u8; 25];
+        file.read_exact(&mut trailer)?;
+
+        if &trailer[0..8] == MAGIC {
+            let offset = u64::from_le_bytes(trailer[8..16].try_into().unwrap());
+            let size = u64::from_le_bytes(trailer[16..24].try_into().unwrap());
+            let family = match trailer[24] {
+                0 => Some(ModelFamily::Qwen),
+                1 => Some(ModelFamily::Gemma),
+                2 => Some(ModelFamily::Smollm),
+                _ => None,
+            };
+            return Ok(EmbeddedModelInfo {
+                offset,
+                size,
+                family,
+            });
+        }
     }
 
-    file.seek(SeekFrom::End(-24))?;
-    let mut trailer = [0u8; 24];
-    file.read_exact(&mut trailer)?;
+    // Fall back to old 24-byte trailer format (no family byte)
+    if file_len >= 24 {
+        file.seek(SeekFrom::End(-24))?;
+        let mut trailer = [0u8; 24];
+        file.read_exact(&mut trailer)?;
 
-    if &trailer[0..8] != MAGIC {
+        if &trailer[0..8] == MAGIC {
+            let offset = u64::from_le_bytes(trailer[8..16].try_into().unwrap());
+            let size = u64::from_le_bytes(trailer[16..24].try_into().unwrap());
+            return Ok(EmbeddedModelInfo {
+                offset,
+                size,
+                family: None,
+            });
+        }
+    }
+
+    bail!(format_error("No embedded model found.", None))
+}
+
+/// Result of getting model path, includes embedded family if available
+struct ModelPathInfo {
+    path: PathBuf,
+    embedded_family: Option<ModelFamily>,
+}
+
+fn get_model_path(cli_model: Option<&PathBuf>) -> Result<ModelPathInfo> {
+    // CLI flag takes highest priority
+    if let Some(model_path) = cli_model {
+        if model_path.exists() {
+            return Ok(ModelPathInfo {
+                path: model_path.clone(),
+                embedded_family: None,
+            });
+        }
         bail!(format_error(
-            "No embedded model found (missing magic).",
-            None
+            &format!("Model not found: {}", model_path.display()),
+            Some("Check the path and try again")
         ));
     }
 
-    let offset = u64::from_le_bytes(trailer[8..16].try_into().unwrap());
-    let size = u64::from_le_bytes(trailer[16..24].try_into().unwrap());
-
-    Ok((offset, size))
-}
-
-fn get_model_path() -> Result<PathBuf> {
-    // Check for embedded model first
-    if let Ok((offset, size)) = find_embedded_model() {
+    // Check for embedded model
+    if let Ok(info) = find_embedded_model() {
         let exe_path = env::current_exe()?;
         let mut file = File::open(&exe_path)?;
 
         // Extract to temp
         let temp_path = env::temp_dir().join("why-model.gguf");
-        if !temp_path.exists() || temp_path.metadata().map(|m| m.len()).unwrap_or(0) != size {
+        if !temp_path.exists() || temp_path.metadata().map(|m| m.len()).unwrap_or(0) != info.size {
             eprintln!("{}", "Extracting embedded model...".dimmed());
-            file.seek(SeekFrom::Start(offset))?;
-            let mut model_data = vec![0u8; size as usize];
+            file.seek(SeekFrom::Start(info.offset))?;
+            let mut model_data = vec![0u8; info.size as usize];
             file.read_exact(&mut model_data)?;
             std::fs::write(&temp_path, model_data)?;
         }
-        return Ok(temp_path);
+        return Ok(ModelPathInfo {
+            path: temp_path,
+            embedded_family: info.family,
+        });
     }
 
     // Fallback: look for model file in current dir or next to exe
+    // Include both old and new model filenames for compatibility
     let candidates = [
-        PathBuf::from("qwen2.5-coder-0.5b.gguf"),
         PathBuf::from("model.gguf"),
+        PathBuf::from("qwen2.5-coder-0.5b-instruct-q8_0.gguf"),
+        PathBuf::from("qwen2.5-coder-0.5b.gguf"), // Old filename for compatibility
         env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.join("model.gguf")))
@@ -206,12 +299,15 @@ fn get_model_path() -> Result<PathBuf> {
 
     for path in candidates {
         if path.exists() {
-            return Ok(path);
+            return Ok(ModelPathInfo {
+                path,
+                embedded_family: None,
+            });
         }
     }
 
     let message = format!(
-        "{} {}\n{} {}\n  1. Place qwen2.5-coder-0.5b.gguf in current directory\n  2. Embed model: ./scripts/embed.sh target/release/why model.gguf why-embedded",
+        "{} {}\n{} {}\n  1. Use --model <path> to specify a GGUF model\n  2. Place model.gguf in current directory\n  3. Embed model: ./scripts/embed.sh target/release/why model.gguf why-embedded",
         "Error:".red().bold(),
         "No model found.",
         "Tip:".blue().bold(),
@@ -250,10 +346,36 @@ fn get_input(cli: &Cli) -> Result<String> {
     bail!(message)
 }
 
-const PROMPT_TEMPLATE: &str = include_str!("prompt.txt");
+/// ChatML template for Qwen and SmolLM models
+const TEMPLATE_CHATML: &str = include_str!("prompts/chatml.txt");
 
-fn build_prompt(error: &str) -> String {
-    PROMPT_TEMPLATE.replace("{error}", error.trim())
+/// Gemma template using <start_of_turn> format
+const TEMPLATE_GEMMA: &str = include_str!("prompts/gemma.txt");
+
+/// Detect model family from filename/path
+fn detect_model_family(model_path: &Path) -> ModelFamily {
+    let filename = model_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if filename.contains("gemma") {
+        ModelFamily::Gemma
+    } else if filename.contains("smol") || filename.contains("smollm") {
+        ModelFamily::Smollm
+    } else {
+        // Default to Qwen (most common, also works for generic models)
+        ModelFamily::Qwen
+    }
+}
+
+fn build_prompt(error: &str, family: ModelFamily) -> String {
+    let template = match family {
+        ModelFamily::Gemma => TEMPLATE_GEMMA,
+        ModelFamily::Qwen | ModelFamily::Smollm => TEMPLATE_CHATML,
+    };
+    template.replace("{error}", error.trim())
 }
 
 /// Sampling parameters for inference
@@ -764,6 +886,67 @@ fn print_completions(shell: Shell) {
     generate(shell, &mut cmd, "why", &mut io::stdout());
 }
 
+#[allow(clippy::print_literal)]
+fn print_model_list() {
+    println!("{}", "Available Model Variants".bold());
+    println!();
+    println!(
+        "These models can be built with {} or used with {}:",
+        "nix build .#<variant>".cyan(),
+        "--model".cyan()
+    );
+    println!();
+    println!(
+        "  {:<20} {:<12} {}",
+        "Variant".blue().bold(),
+        "Size".blue().bold(),
+        "Description".blue().bold()
+    );
+    println!(
+        "  {:<20} {:<12} {}",
+        "───────────────────", "──────────", "─────────────────────────────────────"
+    );
+    println!(
+        "  {:<20} {:<12} {} {}",
+        "why-qwen2_5-coder",
+        "~530MB",
+        "Qwen2.5-Coder 0.5B - best quality",
+        "(default)".dimmed()
+    );
+    println!(
+        "  {:<20} {:<12} {}",
+        "why-qwen3", "~639MB", "Qwen3 0.6B - newest Qwen"
+    );
+    println!(
+        "  {:<20} {:<12} {}",
+        "why-gemma3", "~292MB", "Gemma 3 270M - Google"
+    );
+    println!(
+        "  {:<20} {:<12} {}",
+        "why-smollm2", "~145MB", "SmolLM2 135M - smallest/fastest"
+    );
+    println!();
+    println!("{}", "Template Families".bold());
+    println!();
+    println!(
+        "  Use {} to override auto-detection:",
+        "--template <family>".cyan()
+    );
+    println!();
+    println!(
+        "  {:<12} {}",
+        "qwen".green(),
+        "ChatML format (Qwen, SmolLM)"
+    );
+    println!(
+        "  {:<12} {}",
+        "gemma".green(),
+        "Gemma format (<start_of_turn>)"
+    );
+    println!("  {:<12} {}", "smollm".green(), "ChatML format (alias)");
+    println!();
+}
+
 fn main() -> Result<()> {
     // Suppress verbose llama.cpp logs immediately
     send_logs_to_tracing(LogOptions::default().with_logs_enabled(false));
@@ -776,9 +959,30 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Handle --list-models
+    if cli.list_models {
+        print_model_list();
+        return Ok(());
+    }
+
     let input = get_input(&cli)?;
-    let model_path = get_model_path()?;
-    let prompt = build_prompt(&input);
+    let model_info = get_model_path(cli.model.as_ref())?;
+    let model_path = &model_info.path;
+
+    // Determine model family: CLI override > embedded family > auto-detect from path
+    let (model_family, family_source) = if let Some(family) = cli.template {
+        (family, "override".to_string())
+    } else if let Some(family) = model_info.embedded_family {
+        (family, "embedded".to_string())
+    } else {
+        let detected = detect_model_family(model_path);
+        let filename = model_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        (detected, format!("auto-detected from '{}'", filename))
+    };
+    let prompt = build_prompt(&input, model_family);
 
     if cli.debug {
         print_debug_section(
@@ -792,7 +996,13 @@ fn main() -> Result<()> {
         );
         print_debug_section("Prompt", &prompt, Some(format!("({} chars)", prompt.len())));
         eprintln!("{}", "=== DEBUG: Model ===".yellow().bold());
-        match std::fs::metadata(&model_path) {
+        eprintln!(
+            "{} {} ({})",
+            "Family:".blue().bold(),
+            model_family,
+            family_source
+        );
+        match std::fs::metadata(model_path) {
             Ok(meta) => {
                 let size_mb = meta.len() as f64 / (1024.0 * 1024.0);
                 eprintln!(
@@ -821,7 +1031,7 @@ fn main() -> Result<()> {
     let mut retries = 0;
 
     loop {
-        (response, stats) = run_inference(&model_path, &prompt, &params)?;
+        (response, stats) = run_inference(model_path, &prompt, &params)?;
 
         // Check for degenerate output (repetitive patterns)
         if is_degenerate_response(&response) {
@@ -984,7 +1194,7 @@ mod tests {
 
     #[test]
     fn test_build_prompt_substitutes_error() {
-        let prompt = build_prompt("segmentation fault");
+        let prompt = build_prompt("segmentation fault", ModelFamily::Qwen);
         assert!(prompt.contains("segmentation fault"));
         assert!(prompt.contains("<|im_start|>"));
         assert!(prompt.contains("SUMMARY:"));
@@ -992,9 +1202,49 @@ mod tests {
 
     #[test]
     fn test_build_prompt_trims_whitespace() {
-        let prompt = build_prompt("  error with spaces  ");
+        let prompt = build_prompt("  error with spaces  ", ModelFamily::Qwen);
         assert!(prompt.contains("error with spaces"));
         assert!(!prompt.contains("  error")); // leading spaces trimmed
+    }
+
+    #[test]
+    fn test_build_prompt_gemma_template() {
+        let prompt = build_prompt("test error", ModelFamily::Gemma);
+        assert!(prompt.contains("test error"));
+        assert!(prompt.contains("<start_of_turn>"));
+        assert!(prompt.contains("<end_of_turn>"));
+        assert!(!prompt.contains("<|im_start|>")); // No ChatML tokens
+    }
+
+    #[test]
+    fn test_detect_model_family_qwen() {
+        let path = PathBuf::from("/path/to/qwen2.5-coder-0.5b-instruct-q8_0.gguf");
+        assert_eq!(detect_model_family(&path), ModelFamily::Qwen);
+    }
+
+    #[test]
+    fn test_detect_model_family_gemma() {
+        let path = PathBuf::from("/path/to/gemma-3-270m-it-Q8_0.gguf");
+        assert_eq!(detect_model_family(&path), ModelFamily::Gemma);
+    }
+
+    #[test]
+    fn test_detect_model_family_smollm() {
+        let path = PathBuf::from("/path/to/SmolLM2-135M-Instruct-Q8_0.gguf");
+        assert_eq!(detect_model_family(&path), ModelFamily::Smollm);
+    }
+
+    #[test]
+    fn test_detect_model_family_default() {
+        let path = PathBuf::from("/path/to/random-model.gguf");
+        assert_eq!(detect_model_family(&path), ModelFamily::Qwen); // Default
+    }
+
+    #[test]
+    fn test_model_family_display() {
+        assert_eq!(format!("{}", ModelFamily::Qwen), "qwen (ChatML)");
+        assert_eq!(format!("{}", ModelFamily::Gemma), "gemma (Gemma format)");
+        assert_eq!(format!("{}", ModelFamily::Smollm), "smollm (ChatML)");
     }
 
     #[test]
@@ -1124,7 +1374,7 @@ mod tests {
     #[test]
     fn test_build_prompt_long_input() {
         let long_error = "error: ".to_string() + &"x".repeat(5000);
-        let prompt = build_prompt(&long_error);
+        let prompt = build_prompt(&long_error, ModelFamily::Qwen);
         assert!(prompt.contains(&"x".repeat(100))); // Contains part of the long string
         assert!(prompt.len() > 5000);
     }
@@ -1161,7 +1411,7 @@ mod tests {
             10 |     println!(\"{}\", x);\n\
             |                    ^ value borrowed here after move";
 
-        let prompt = build_prompt(multiline_error);
+        let prompt = build_prompt(multiline_error, ModelFamily::Qwen);
 
         assert!(prompt.contains("error[E0382]"));
         assert!(prompt.contains("src/main.rs:10:5"));
@@ -1171,7 +1421,7 @@ mod tests {
     #[test]
     fn test_build_prompt_preserves_newlines() {
         let input = "line1\nline2\nline3";
-        let prompt = build_prompt(input);
+        let prompt = build_prompt(input, ModelFamily::Qwen);
 
         // The prompt should contain all lines
         assert!(prompt.contains("line1"));
@@ -1226,7 +1476,7 @@ mod tests {
     fn test_build_prompt_long_multiline() {
         let long_line = "x".repeat(500);
         let multiline = format!("{}\n{}\n{}", long_line, long_line, long_line);
-        let prompt = build_prompt(&multiline);
+        let prompt = build_prompt(&multiline, ModelFamily::Qwen);
 
         assert!(prompt.len() > 1500);
         assert!(prompt.contains(&"x".repeat(100)));
@@ -1279,7 +1529,7 @@ mod tests {
     #[test]
     fn test_build_prompt_empty_lines_in_multiline() {
         let input = "error\n\n\nmore info\n\n";
-        let prompt = build_prompt(input);
+        let prompt = build_prompt(input, ModelFamily::Qwen);
 
         assert!(prompt.contains("error"));
         assert!(prompt.contains("more info"));
@@ -1337,6 +1587,56 @@ mod tests {
         let cli = Cli::parse_from(["why", "-d", "-j", "error"]);
         assert!(cli.debug);
         assert!(cli.json);
+    }
+
+    #[test]
+    fn test_cli_parses_model_flag() {
+        let cli = Cli::parse_from(["why", "--model", "/path/to/model.gguf", "error"]);
+        assert_eq!(cli.model, Some(PathBuf::from("/path/to/model.gguf")));
+    }
+
+    #[test]
+    fn test_cli_parses_short_model_flag() {
+        let cli = Cli::parse_from(["why", "-m", "/path/to/model.gguf", "error"]);
+        assert_eq!(cli.model, Some(PathBuf::from("/path/to/model.gguf")));
+    }
+
+    #[test]
+    fn test_cli_parses_template_flag() {
+        let cli = Cli::parse_from(["why", "--template", "gemma", "error"]);
+        assert_eq!(cli.template, Some(ModelFamily::Gemma));
+    }
+
+    #[test]
+    fn test_cli_parses_short_template_flag() {
+        let cli = Cli::parse_from(["why", "-t", "qwen", "error"]);
+        assert_eq!(cli.template, Some(ModelFamily::Qwen));
+    }
+
+    #[test]
+    fn test_cli_parses_template_smollm() {
+        let cli = Cli::parse_from(["why", "--template", "smollm", "error"]);
+        assert_eq!(cli.template, Some(ModelFamily::Smollm));
+    }
+
+    #[test]
+    fn test_cli_parses_list_models_flag() {
+        let cli = Cli::parse_from(["why", "--list-models"]);
+        assert!(cli.list_models);
+    }
+
+    #[test]
+    fn test_cli_model_and_template_together() {
+        let cli = Cli::parse_from([
+            "why",
+            "--model",
+            "/path/to/gemma.gguf",
+            "--template",
+            "gemma",
+            "error",
+        ]);
+        assert_eq!(cli.model, Some(PathBuf::from("/path/to/gemma.gguf")));
+        assert_eq!(cli.template, Some(ModelFamily::Gemma));
     }
 
     // Tests for extract_section_label guardrail

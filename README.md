@@ -45,6 +45,12 @@ python script.py 2>&1 | why
 
 # For the robots
 why --json "null pointer exception"
+
+# Use external model (CLI-only build)
+why --model /path/to/model.gguf "error message"
+
+# Override template for non-standard models
+why --template gemma --model /path/to/gemma.gguf "error"
 ```
 
 See the [examples/](examples/) directory for sample scripts in various languages that produce common errors.
@@ -68,6 +74,7 @@ curl -sSfL https://raw.githubusercontent.com/jamesbrink/why/main/install.sh | sh
 This downloads the latest release binary (~680MB, includes the model) and installs it to `~/.local/bin` or `/usr/local/bin`.
 
 **Options:**
+
 ```bash
 # Install to a specific directory
 WHY_INSTALL_DIR=/opt/bin curl -sSfL https://raw.githubusercontent.com/jamesbrink/why/main/install.sh | sh
@@ -79,6 +86,7 @@ WHY_VERSION=v0.1.0 curl -sSfL https://raw.githubusercontent.com/jamesbrink/why/m
 ### Pre-built Binary (Manual)
 
 Download the binary for your platform from [Releases](https://github.com/jamesbrink/why/releases):
+
 - `why-x86_64-linux` - Linux (x86_64)
 - `why-aarch64-darwin` - macOS (Apple Silicon)
 - `why-x86_64-darwin` - macOS (Intel)
@@ -135,11 +143,14 @@ why --completions fish > ~/.config/fish/completions/why.fish
 ## Nix Build Targets
 
 ```bash
-# Build embedded binary (~680MB with model)
-nix build
+nix build               # Default (Qwen2.5-Coder, ~680MB)
+nix build .#cli         # CLI only, no model (~4.5MB)
+nix build .#why-qwen3   # Qwen3 0.6B (~644MB)
+nix build .#why-gemma3  # Gemma 3 270M (~297MB)
+nix build .#why-smollm2 # SmolLM2 135M (~149MB)
 
-# Run directly
-nix run . -- "segmentation fault"
+# Use CLI with external model
+nix run .#cli -- --model /path/to/model.gguf "error"
 ```
 
 ## NixOS / Home Manager
@@ -204,13 +215,15 @@ The model is embedded directly in the binary using a custom trailer format. On f
 
 This project is licensed under the [MIT License](LICENSE).
 
-### Model
+### Models
 
-Uses [Qwen2.5-Coder 0.5B](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF) (Q8_0 quantization, ~676MB) fetched from HuggingFace during build.
+Available model variants (all Apache 2.0 licensed):
 
-This project uses [Qwen2.5-Coder](https://github.com/QwenLM/Qwen2.5-Coder) by the Qwen Team (Alibaba Group), licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+| Model | Size | Note |
+| ----- | ---- | ---- |
+| [Qwen2.5-Coder 0.5B](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF) | ~530MB | Default |
+| [Qwen3 0.6B](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF) | ~639MB | Newest Qwen |
+| [Gemma 3 270M](https://huggingface.co/unsloth/gemma-3-270m-it-GGUF) | ~292MB | Google |
+| [SmolLM2 135M](https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF) | ~145MB | Smallest |
 
-When distributing binaries with an embedded model, both licenses apply:
-
-- The `why` CLI code: MIT License
-- The Qwen2.5-Coder model: Apache License 2.0
+When distributing binaries with an embedded model, both the MIT (CLI) and Apache 2.0 (model) licenses apply.

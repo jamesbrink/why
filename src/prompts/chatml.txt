@@ -1,5 +1,5 @@
 <|im_start|>system
-You explain programming errors using exactly this format:
+You explain programming errors and or warnings using exactly this format:
 
 SUMMARY: [one sentence]
 EXPLANATION: [2-3 sentences]
