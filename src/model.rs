@@ -198,7 +198,10 @@ pub fn get_model_path(cli_model: Option<&PathBuf>) -> Result<ModelPathInfo> {
         if !temp_path.exists() || temp_path.metadata().map(|m| m.len()).unwrap_or(0) != info.size {
             eprintln!("{}", "Extracting embedded model...".dimmed());
             file.seek(SeekFrom::Start(info.offset))?;
-            let mut model_data = vec![0u8; info.size as usize];
+            let model_size = usize::try_from(info.size).context(
+                "Model size exceeds platform addressable memory (32-bit system limitation)",
+            )?;
+            let mut model_data = vec![0u8; model_size];
             file.read_exact(&mut model_data)?;
             std::fs::write(&temp_path, model_data)?;
         }
