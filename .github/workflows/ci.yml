@@ -32,7 +32,9 @@ jobs:
 
       - name: Check flake
         run: nix flake check
+        timeout-minutes: 45
 
+      # These are redundant with flake check but seem to help with caching
       - name: Run tests
         run: nix develop --command cargo test
 

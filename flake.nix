@@ -357,12 +357,10 @@
 
         # ============================================================
         # Checks - run tests, clippy, formatting
+        # Note: why-cli removed to reduce parallel builds (OOM on CI)
         # ============================================================
         checks = {
-          # Build the CLI (includes compile-time checks)
-          why-cli = why-cli;
-
-          # Run clippy
+          # Run clippy (also verifies compilation)
           why-clippy = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
             cargoClippyExtraArgs = "--all-targets -- --deny warnings";
