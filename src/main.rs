@@ -1,7 +1,9 @@
 use anyhow::{bail, Context, Result};
-use clap::{CommandFactory, Parser, ValueEnum};
+use clap::{CommandFactory, Parser};
 use clap_complete::{generate, Shell};
 use colored::Colorize;
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::terminal;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
@@ -10,310 +12,1864 @@ use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::model::{AddBos, Special};
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::{send_logs_to_tracing, LogOptions};
-use serde::Serialize;
+use notify::{
+    Config as NotifyConfig, Event as NotifyEvent, RecommendedWatcher, RecursiveMode, Watcher,
+};
+use regex::Regex;
 use std::env;
-use std::fmt;
 use std::fs::File;
-use std::io::{self, BufRead, IsTerminal, Read, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Model family for prompt template selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum ModelFamily {
-    /// Qwen models - uses ChatML format
-    Qwen,
-    /// Gemma models - uses Gemma format
-    Gemma,
-    /// SmolLM models - uses ChatML format
-    Smollm,
-}
+// Unix-specific imports for daemon mode
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener, UnixStream};
 
-impl fmt::Display for ModelFamily {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ModelFamily::Qwen => write!(f, "qwen (ChatML)"),
-            ModelFamily::Gemma => write!(f, "gemma (Gemma format)"),
-            ModelFamily::Smollm => write!(f, "smollm (ChatML)"),
-        }
-    }
-}
+// Import from the library crate
+use why::cli::{Cli, DaemonCommand};
+use why::config::{print_hook_config, Config};
+use why::daemon::{
+    get_pid_path, get_socket_path, DaemonAction, DaemonRequest, DaemonResponse, DaemonResponseType,
+    DaemonStats, ErrorExplanationResponse,
+};
+use why::hooks::{install_hook, uninstall_hook};
+use why::model::{
+    build_prompt, detect_model_family, get_model_path, is_degenerate_response, is_echo_response,
+    run_inference_with_callback, ModelFamily, ModelPathInfo, SamplingParams, TokenCallback,
+    MAX_RETRIES,
+};
+use why::output::{
+    contains_error_patterns, format_file_line, interpret_exit_code, parse_response, print_colored,
+    print_debug_section, print_frames, print_stats,
+};
+use why::stack_trace::{StackTraceJson, StackTraceParserRegistry};
+use why::watch::{DetectedError, ErrorDeduplicator, ErrorDetector, WatchConfig};
 
-/// Magic marker written before embedded model
-const MAGIC: &[u8; 8] = b"WHYMODEL";
-
-/// Quick error explanation using local LLM
-#[derive(Parser, Debug)]
-#[command(
-    name = "why",
-    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("WHY_GIT_SHA"), ")"),
-    about,
-    long_about = None
-)]
-#[command(
-    after_help = "EXAMPLES:\n    why \"segmentation fault\"\n    cargo build 2>&1 | why\n    why --json \"null pointer exception\""
-)]
-struct Cli {
-    /// Error message to explain
-    #[arg(trailing_var_arg = true)]
-    error: Vec<String>,
-
-    /// Output as JSON
-    #[arg(long, short = 'j')]
-    json: bool,
-
-    /// Show debug info (raw prompt and model response)
-    #[arg(long, short = 'd')]
-    debug: bool,
-
-    /// Show performance stats
-    #[arg(long)]
-    stats: bool,
-
-    /// Path to GGUF model file (overrides embedded model)
-    #[arg(long, short = 'm', value_name = "PATH")]
-    model: Option<PathBuf>,
-
-    /// Model family for prompt template (auto-detected if not specified)
-    #[arg(long, short = 't', value_enum, value_name = "FAMILY")]
-    template: Option<ModelFamily>,
-
-    /// List available model variants and exit
-    #[arg(long)]
-    list_models: bool,
-
-    /// Generate shell completions
-    #[arg(long, value_enum, value_name = "SHELL")]
-    completions: Option<Shell>,
-}
-
-#[derive(Debug, Serialize)]
-struct ErrorExplanation {
-    error: String,
-    summary: String,
-    explanation: String,
-    suggestion: String,
-}
-
-#[derive(Debug, Serialize)]
-struct InferenceStats {
-    backend: String,
-    prompt_tokens: usize,
-    generated_tokens: usize,
-    total_tokens: usize,
-    model_load_ms: u128,
-    prompt_eval_ms: u128,
-    generation_ms: u128,
-    total_ms: u128,
-    gen_tok_per_s: f64,
-    total_tok_per_s: f64,
-}
-
-fn format_error(message: &str, tip: Option<&str>) -> String {
-    let mut output = format!("{} {}", "Error:".red().bold(), message);
-    if let Some(tip) = tip {
-        output.push('\n');
-        output.push_str(&format!("{} {}", "Tip:".blue().bold(), tip));
-    }
-    output
-}
-
-fn print_debug_section(title: &str, body: &str, footer: Option<String>) {
-    eprintln!("{}", format!("=== DEBUG: {title} ===").yellow().bold());
-    if body.trim().is_empty() {
-        eprintln!("{}", "| <empty>".dimmed());
+fn prompt_confirm(command: &str, exit_code: i32, stderr: &str) -> bool {
+    // If stderr contains obvious error patterns, suggest yes
+    let suggested = if contains_error_patterns(stderr) {
+        "Y/n"
     } else {
-        for line in body.lines() {
-            eprintln!("{}", format!("| {line}").bright_white());
-        }
-    }
-    if let Some(footer) = footer {
-        eprintln!("{}", footer.dimmed());
-    }
+        "y/N"
+    };
+    let default_yes = contains_error_patterns(stderr);
+
     eprintln!();
-}
+    eprintln!(
+        "{} {} (exit {})",
+        "Command failed:".yellow().bold(),
+        command,
+        exit_code
+    );
+    eprint!(
+        "{} Explain this error? [{}]: ",
+        "?".cyan().bold(),
+        suggested
+    );
+    io::stderr().flush().ok();
 
-fn backend_mode() -> &'static str {
-    if cfg!(feature = "metal") {
-        "metal"
-    } else if cfg!(feature = "cuda") {
-        "cuda"
-    } else if cfg!(feature = "vulkan") {
-        "vulkan"
-    } else {
-        "cpu"
+    // Read user input
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() {
+        // If we can't read stdin, default to the suggested value
+        return default_yes;
+    }
+
+    let input = input.trim().to_lowercase();
+    match input.as_str() {
+        "" => default_yes, // Empty input = default
+        "y" | "yes" => true,
+        "n" | "no" => false,
+        _ => default_yes, // Unknown input = default
     }
 }
 
-fn print_stats(stats: &InferenceStats) {
-    println!("{} {}", "▸".magenta(), "Stats".magenta().bold());
-    println!(
-        "  {} {}",
-        "Backend:".blue().bold(),
-        stats.backend.bright_white()
-    );
-    println!(
-        "  {} {}",
-        "Tokens:".blue().bold(),
+/// Result of running a command in capture mode
+#[derive(Debug)]
+struct CaptureResult {
+    /// Command that was run (for display)
+    command: String,
+    /// Exit code from the command
+    exit_code: i32,
+    /// Captured stdout (if capture_all is enabled)
+    stdout: String,
+    /// Captured stderr
+    stderr: String,
+}
+
+/// Run a command and capture its output
+/// Passes through stdout/stderr in real-time while also buffering
+fn run_capture_command(command: &[String], capture_all: bool) -> Result<CaptureResult> {
+    if command.is_empty() {
+        bail!("No command specified. Use: why --capture -- <command>");
+    }
+
+    let cmd_name = &command[0];
+    let cmd_args = &command[1..];
+    let command_str = command.join(" ");
+
+    // Spawn the command with piped outputs
+    let mut child = Command::new(cmd_name)
+        .args(cmd_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("Failed to run command: {}", command_str))?;
+
+    // Capture buffers
+    let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
+    let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
+
+    // Take ownership of child stdout/stderr
+    let child_stdout = child.stdout.take();
+    let child_stderr = child.stderr.take();
+
+    // Spawn thread to handle stdout
+    let stdout_handle = if let Some(mut stdout) = child_stdout {
+        let buffer = Arc::clone(&stdout_buffer);
+        let capture = capture_all;
+        Some(thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match stdout.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        // Pass through to terminal
+                        let _ = io::stdout().write_all(&buf[..n]);
+                        let _ = io::stdout().flush();
+                        // Buffer for later analysis if capture_all
+                        if capture {
+                            buffer.lock().unwrap().extend_from_slice(&buf[..n]);
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+        }))
+    } else {
+        None
+    };
+
+    // Spawn thread to handle stderr
+    let stderr_handle = if let Some(mut stderr) = child_stderr {
+        let buffer = Arc::clone(&stderr_buffer);
+        Some(thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match stderr.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        // Pass through to terminal
+                        let _ = io::stderr().write_all(&buf[..n]);
+                        let _ = io::stderr().flush();
+                        // Always buffer stderr for analysis
+                        buffer.lock().unwrap().extend_from_slice(&buf[..n]);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+        }))
+    } else {
+        None
+    };
+
+    // Wait for command to complete
+    let status = child.wait()?;
+
+    // Wait for output threads to finish
+    if let Some(handle) = stdout_handle {
+        let _ = handle.join();
+    }
+    if let Some(handle) = stderr_handle {
+        let _ = handle.join();
+    }
+
+    // Extract captured output
+    let stdout = String::from_utf8_lossy(&stdout_buffer.lock().unwrap()).to_string();
+    let stderr = String::from_utf8_lossy(&stderr_buffer.lock().unwrap()).to_string();
+
+    let exit_code = status.code().unwrap_or(-1);
+
+    Ok(CaptureResult {
+        command: command_str,
+        exit_code,
+        stdout,
+        stderr,
+    })
+}
+
+// ============================================================================
+// Watch Mode (Feature 2)
+
+pub struct FileWatcher {
+    /// Path to watch
+    path: PathBuf,
+    /// Current read position
+    position: u64,
+    /// Last known file size (for truncation detection)
+    last_size: u64,
+}
+
+impl FileWatcher {
+    /// Create a new file watcher
+    pub fn new(path: PathBuf) -> Result<Self> {
+        // Validate path exists
+        if !path.exists() {
+            bail!("File does not exist: {}", path.display());
+        }
+
+        if !path.is_file() {
+            bail!("Not a file: {}", path.display());
+        }
+
+        // Get initial file size
+        let metadata = std::fs::metadata(&path)?;
+        let size = metadata.len();
+
+        Ok(Self {
+            path,
+            position: size, // Start at end of file (tail behavior)
+            last_size: size,
+        })
+    }
+
+    /// Read new content from the file
+    pub fn read_new_content(&mut self) -> Result<Option<String>> {
+        let metadata = std::fs::metadata(&self.path)?;
+        let current_size = metadata.len();
+
+        // Check for truncation (log rotation)
+        if current_size < self.last_size {
+            // File was truncated, reset to beginning
+            self.position = 0;
+        }
+        self.last_size = current_size;
+
+        // No new content
+        if self.position >= current_size {
+            return Ok(None);
+        }
+
+        // Read new content
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(self.position))?;
+
+        let mut content = String::new();
+        file.read_to_string(&mut content)?;
+
+        self.position = current_size;
+
+        if content.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(content))
+        }
+    }
+
+    /// Get the path being watched
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Command watcher for watch mode
+pub struct CommandWatcher {
+    /// Child process
+    child: Child,
+    /// Command string (for display)
+    command: String,
+    /// Reader for stdout
+    stdout_reader: Option<BufReader<std::process::ChildStdout>>,
+    /// Reader for stderr
+    stderr_reader: Option<BufReader<std::process::ChildStderr>>,
+}
+
+impl CommandWatcher {
+    /// Create a new command watcher
+    pub fn new(command: &str) -> Result<Self> {
+        // Parse command - simple split on whitespace for now
+        // For complex commands, users should wrap in shell
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        if parts.is_empty() {
+            bail!("Empty command");
+        }
+
+        let mut child = Command::new(parts[0])
+            .args(&parts[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("Failed to start command: {}", command))?;
+
+        let stdout_reader = child.stdout.take().map(BufReader::new);
+        let stderr_reader = child.stderr.take().map(BufReader::new);
+
+        Ok(Self {
+            child,
+            command: command.to_string(),
+            stdout_reader,
+            stderr_reader,
+        })
+    }
+
+    /// Check if the child process is still running
+    pub fn is_running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Get the exit code (if finished)
+    pub fn exit_code(&mut self) -> Option<i32> {
+        match self.child.try_wait() {
+            Ok(Some(status)) => status.code(),
+            _ => None,
+        }
+    }
+
+    /// Kill the child process
+    pub fn kill(&mut self) -> Result<()> {
+        self.child.kill()?;
+        Ok(())
+    }
+
+    /// Get the command string
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+}
+
+/// Watch mode session state
+pub struct WatchSession {
+    /// Configuration
+    config: WatchConfig,
+    /// Error detector
+    detector: ErrorDetector,
+    /// Error deduplicator
+    deduplicator: ErrorDeduplicator,
+    /// Error counter
+    error_count: usize,
+    /// Explained error count
+    explained_count: usize,
+    /// Paused state
+    paused: bool,
+    /// Running flag
+    running: Arc<AtomicBool>,
+}
+
+impl WatchSession {
+    /// Create a new watch session
+    pub fn new(config: WatchConfig) -> Self {
+        let pattern = config.pattern.clone();
+        let max_lines = config.max_aggregation_lines;
+        let ttl = config.dedup_ttl;
+        let dedup = config.dedup;
+
+        Self {
+            config,
+            detector: ErrorDetector::new(pattern, max_lines),
+            deduplicator: ErrorDeduplicator::new(if dedup { ttl } else { Duration::ZERO }),
+            error_count: 0,
+            explained_count: 0,
+            paused: false,
+            running: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    /// Get running flag for shutdown signaling
+    pub fn running_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.running)
+    }
+
+    /// Stop the session
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+
+    /// Check if running
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    /// Toggle pause state
+    pub fn toggle_pause(&mut self) {
+        self.paused = !self.paused;
+    }
+
+    /// Check if paused
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Toggle deduplication
+    pub fn toggle_dedup(&mut self) {
+        self.config.dedup = !self.config.dedup;
+    }
+
+    /// Process a line of input
+    pub fn process_line(&mut self, line: &str) -> Option<DetectedError> {
+        if self.paused {
+            return None;
+        }
+
+        if let Some(error) = self.detector.process_line(line) {
+            self.error_count += 1;
+
+            // Check deduplication
+            if self.config.dedup && self.deduplicator.is_duplicate(&error) {
+                return None;
+            }
+
+            Some(error)
+        } else {
+            None
+        }
+    }
+
+    /// Force flush any pending error
+    pub fn flush(&mut self) -> Option<DetectedError> {
+        if let Some(error) = self.detector.flush_error() {
+            self.error_count += 1;
+            if self.config.dedup && self.deduplicator.is_duplicate(&error) {
+                return None;
+            }
+            Some(error)
+        } else {
+            None
+        }
+    }
+
+    /// Increment explained count
+    pub fn mark_explained(&mut self) {
+        self.explained_count += 1;
+    }
+
+    /// Get status string
+    pub fn status(&self) -> String {
         format!(
-            "prompt {}, generated {}, total {}",
-            stats.prompt_tokens, stats.generated_tokens, stats.total_tokens
+            "[{}/{}] errors detected/explained",
+            self.error_count, self.explained_count
         )
-        .bright_white()
-    );
+    }
+
+    /// Get config
+    pub fn config(&self) -> &WatchConfig {
+        &self.config
+    }
+}
+
+/// Print watch mode startup banner
+fn print_watch_banner(target: &str, config: &WatchConfig) {
+    println!();
+    println!("{} {}", "▸".cyan(), "Watch Mode".cyan().bold());
+    println!("  {} {}", "Watching:".blue().bold(), target.bright_white());
+    println!("  {} {}ms", "Debounce:".blue().bold(), config.debounce_ms);
     println!(
         "  {} {}",
-        "Timing:".blue().bold(),
-        format!(
-            "model {} ms, prompt {} ms, gen {} ms, total {} ms",
-            stats.model_load_ms, stats.prompt_eval_ms, stats.generation_ms, stats.total_ms
-        )
-        .bright_white()
+        "Dedup:".blue().bold(),
+        if config.dedup {
+            "enabled (5 min TTL)"
+        } else {
+            "disabled"
+        }
     );
+    if let Some(ref pattern) = config.pattern {
+        println!("  {} {}", "Pattern:".blue().bold(), pattern.as_str());
+    }
+    println!();
     println!(
-        "  {} {}",
-        "Speed:".blue().bold(),
-        format!(
-            "gen {:.1} tok/s, total {:.1} tok/s",
-            stats.gen_tok_per_s, stats.total_tok_per_s
-        )
-        .bright_white()
+        "  {}",
+        "Press 'q' to quit, 'p' to pause, 'd' to toggle dedup".dimmed()
+    );
+    println!();
+    println!("{}", "─".repeat(60).dimmed());
+    println!();
+}
+
+/// Print waiting indicator
+fn print_waiting() {
+    print!("\r{} ", "Waiting for errors...".dimmed());
+    io::stdout().flush().ok();
+}
+
+/// Clear the waiting line
+fn clear_waiting_line() {
+    print!("\r{}\r", " ".repeat(40));
+    io::stdout().flush().ok();
+}
+
+/// Print error separator with timestamp
+fn print_error_separator(count: usize) {
+    let now = chrono_lite_now();
+    println!();
+    println!(
+        "{} {} {}",
+        "─".repeat(10).dimmed(),
+        format!("[{}] Error #{}", now, count).yellow(),
+        "─".repeat(10).dimmed()
     );
     println!();
 }
 
-/// Embedded model info: offset, size, and optional model family
-struct EmbeddedModelInfo {
-    offset: u64,
-    size: u64,
-    family: Option<ModelFamily>,
+/// Simple timestamp without chrono dependency
+fn chrono_lite_now() -> String {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = duration.as_secs();
+    let hours = (secs / 3600) % 24;
+    let mins = (secs / 60) % 60;
+    let seconds = secs % 60;
+    format!("{:02}:{:02}:{:02}", hours, mins, seconds)
 }
 
-fn find_embedded_model() -> Result<EmbeddedModelInfo> {
-    let exe_path = env::current_exe().context("failed to get executable path")?;
-    let mut file = File::open(&exe_path).context("failed to open self")?;
-    let file_len = file.metadata()?.len();
-
-    // Try new 25-byte trailer format first (with family byte)
-    // Note: This correctly distinguishes from old 24-byte format because:
-    // - New format: magic is at End(-25), so bytes [0..8] contain "WHYMODEL"
-    // - Old format: magic is at End(-24), so when reading 25 bytes from End(-25),
-    //   the magic would be at bytes [1..9], not [0..8], causing the check to fail
-    //   and fall through to the old format handler below.
-    if file_len >= 25 {
-        file.seek(SeekFrom::End(-25))?;
-        let mut trailer = [0u8; 25];
-        file.read_exact(&mut trailer)?;
-
-        if &trailer[0..8] == MAGIC {
-            let offset = u64::from_le_bytes(trailer[8..16].try_into().unwrap());
-            let size = u64::from_le_bytes(trailer[16..24].try_into().unwrap());
-            let family = match trailer[24] {
-                0 => Some(ModelFamily::Qwen),
-                1 => Some(ModelFamily::Gemma),
-                2 => Some(ModelFamily::Smollm),
-                _ => None,
-            };
-            return Ok(EmbeddedModelInfo {
-                offset,
-                size,
-                family,
-            });
-        }
-    }
-
-    // Fall back to old 24-byte trailer format (no family byte)
-    if file_len >= 24 {
-        file.seek(SeekFrom::End(-24))?;
-        let mut trailer = [0u8; 24];
-        file.read_exact(&mut trailer)?;
-
-        if &trailer[0..8] == MAGIC {
-            let offset = u64::from_le_bytes(trailer[8..16].try_into().unwrap());
-            let size = u64::from_le_bytes(trailer[16..24].try_into().unwrap());
-            return Ok(EmbeddedModelInfo {
-                offset,
-                size,
-                family: None,
-            });
-        }
-    }
-
-    bail!(format_error("No embedded model found.", None))
-}
-
-/// Result of getting model path, includes embedded family if available
-struct ModelPathInfo {
+/// Run watch mode for a file
+fn run_file_watch(
     path: PathBuf,
-    embedded_family: Option<ModelFamily>,
+    config: WatchConfig,
+    cli: &Cli,
+    model_info: &ModelPathInfo,
+) -> Result<()> {
+    let mut file_watcher = FileWatcher::new(path.clone())?;
+    let mut session = WatchSession::new(config.clone());
+
+    if !config.quiet {
+        print_watch_banner(&path.display().to_string(), &config);
+    }
+
+    // Set up file system watcher
+    let (tx, rx) = mpsc::channel();
+    let debounce_duration = Duration::from_millis(config.debounce_ms);
+
+    let mut watcher = RecommendedWatcher::new(
+        move |res: std::result::Result<NotifyEvent, notify::Error>| {
+            if let Ok(event) = res {
+                let _ = tx.send(event);
+            }
+        },
+        NotifyConfig::default().with_poll_interval(Duration::from_millis(100)),
+    )?;
+
+    watcher.watch(&path, RecursiveMode::NonRecursive)?;
+
+    // Set up keyboard handling
+    let _running = session.running_flag();
+    let is_tty = io::stdin().is_terminal();
+
+    if is_tty {
+        terminal::enable_raw_mode().ok();
+    }
+
+    // Store last debounce time
+    let mut last_event_time = Instant::now();
+    let mut pending_read = false;
+
+    if !config.quiet && is_tty {
+        print_waiting();
+    }
+
+    // Main loop
+    while session.is_running() {
+        // Check for keyboard input
+        if is_tty && event::poll(Duration::from_millis(50))? {
+            if let Event::Key(key_event) = event::read()? {
+                match key_event.code {
+                    KeyCode::Char('q') => {
+                        session.stop();
+                        break;
+                    }
+                    KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                        session.stop();
+                        break;
+                    }
+                    KeyCode::Char('p') => {
+                        session.toggle_pause();
+                        if !config.quiet {
+                            clear_waiting_line();
+                            if session.is_paused() {
+                                println!("{}", "Paused. Press 'p' to resume.".yellow());
+                            } else {
+                                println!("{}", "Resumed.".green());
+                            }
+                            print_waiting();
+                        }
+                    }
+                    KeyCode::Char('d') => {
+                        session.toggle_dedup();
+                        if !config.quiet {
+                            clear_waiting_line();
+                            println!(
+                                "Dedup {}",
+                                if session.config().dedup {
+                                    "enabled".green()
+                                } else {
+                                    "disabled".red()
+                                }
+                            );
+                            print_waiting();
+                        }
+                    }
+                    KeyCode::Char('c') => {
+                        if config.clear {
+                            print!("\x1B[2J\x1B[1;1H");
+                            io::stdout().flush().ok();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Check for file events
+        match rx.try_recv() {
+            Ok(_event) => {
+                // Debounce: only mark pending if enough time has passed
+                if last_event_time.elapsed() >= debounce_duration {
+                    pending_read = true;
+                    last_event_time = Instant::now();
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                // If we have a pending read and debounce time has passed, do the read
+                if pending_read && last_event_time.elapsed() >= debounce_duration {
+                    pending_read = false;
+
+                    if let Some(content) = file_watcher.read_new_content()? {
+                        if !config.quiet {
+                            clear_waiting_line();
+                        }
+
+                        // Process each line
+                        for line in content.lines() {
+                            if let Some(error) = session.process_line(line) {
+                                process_detected_error(
+                                    &error,
+                                    &mut session,
+                                    cli,
+                                    model_info,
+                                    &config,
+                                )?;
+                            }
+                        }
+
+                        // Flush any remaining error
+                        if let Some(error) = session.flush() {
+                            process_detected_error(&error, &mut session, cli, model_info, &config)?;
+                        }
+
+                        if !config.quiet && is_tty {
+                            print_waiting();
+                        }
+                    }
+                }
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                break;
+            }
+        }
+
+        // Small sleep to avoid busy loop
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    // Cleanup
+    if is_tty {
+        terminal::disable_raw_mode().ok();
+    }
+
+    if !config.quiet {
+        clear_waiting_line();
+        println!();
+        println!("{} {}", "▸".green(), "Watch mode ended".green().bold());
+        println!("  {}", session.status());
+        println!();
+    }
+
+    Ok(())
 }
 
-fn get_model_path(cli_model: Option<&PathBuf>) -> Result<ModelPathInfo> {
-    // CLI flag takes highest priority
-    if let Some(model_path) = cli_model {
-        if model_path.exists() {
-            return Ok(ModelPathInfo {
-                path: model_path.clone(),
-                embedded_family: None,
-            });
-        }
-        bail!(format_error(
-            &format!("Model not found: {}", model_path.display()),
-            Some("Check the path and try again")
-        ));
+/// Run watch mode for a command
+fn run_command_watch(
+    command: &str,
+    config: WatchConfig,
+    cli: &Cli,
+    model_info: &ModelPathInfo,
+) -> Result<()> {
+    let mut cmd_watcher = CommandWatcher::new(command)?;
+    let mut session = WatchSession::new(config.clone());
+
+    if !config.quiet {
+        print_watch_banner(command, &config);
     }
 
-    // Check for embedded model
-    if let Ok(info) = find_embedded_model() {
-        let exe_path = env::current_exe()?;
-        let mut file = File::open(&exe_path)?;
+    // Set up keyboard handling
+    let _running = session.running_flag();
+    let is_tty = io::stdin().is_terminal();
 
-        // Extract to temp
-        let temp_path = env::temp_dir().join("why-model.gguf");
-        if !temp_path.exists() || temp_path.metadata().map(|m| m.len()).unwrap_or(0) != info.size {
-            eprintln!("{}", "Extracting embedded model...".dimmed());
-            file.seek(SeekFrom::Start(info.offset))?;
-            let mut model_data = vec![0u8; info.size as usize];
-            file.read_exact(&mut model_data)?;
-            std::fs::write(&temp_path, model_data)?;
-        }
-        return Ok(ModelPathInfo {
-            path: temp_path,
-            embedded_family: info.family,
-        });
+    if is_tty {
+        terminal::enable_raw_mode().ok();
     }
 
-    // Fallback: look for model file in current dir or next to exe
-    // Include both old and new model filenames for compatibility
-    let candidates = [
-        PathBuf::from("model.gguf"),
-        PathBuf::from("qwen2.5-coder-0.5b-instruct-q8_0.gguf"),
-        PathBuf::from("qwen2.5-coder-0.5b.gguf"), // Old filename for compatibility
-        env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.join("model.gguf")))
-            .unwrap_or_default(),
-    ];
+    // Channels for stdout/stderr lines
+    let (line_tx, line_rx) = mpsc::channel::<String>();
 
-    for path in candidates {
-        if path.exists() {
-            return Ok(ModelPathInfo {
-                path,
-                embedded_family: None,
-            });
+    // Spawn thread for stderr
+    let stderr_tx = line_tx.clone();
+    let stderr_reader = cmd_watcher.stderr_reader.take();
+    let stderr_handle = stderr_reader.map(|reader| {
+        thread::spawn(move || {
+            for line in reader.lines().map_while(Result::ok) {
+                // Echo to terminal
+                eprintln!("{}", line);
+                // Send for processing
+                let _ = stderr_tx.send(line);
+            }
+        })
+    });
+
+    // Spawn thread for stdout (just pass through, optionally process)
+    let stdout_tx = line_tx;
+    let stdout_reader = cmd_watcher.stdout_reader.take();
+    let stdout_handle = stdout_reader.map(|reader| {
+        thread::spawn(move || {
+            for line in reader.lines().map_while(Result::ok) {
+                // Echo to terminal
+                println!("{}", line);
+                // Send for processing
+                let _ = stdout_tx.send(line);
+            }
+        })
+    });
+
+    // Main loop
+    while session.is_running() {
+        // Check if command is still running
+        if !cmd_watcher.is_running() {
+            // Process any remaining lines
+            while let Ok(line) = line_rx.try_recv() {
+                if let Some(error) = session.process_line(&line) {
+                    process_detected_error(&error, &mut session, cli, model_info, &config)?;
+                }
+            }
+            if let Some(error) = session.flush() {
+                process_detected_error(&error, &mut session, cli, model_info, &config)?;
+            }
+
+            // Check exit code
+            if let Some(exit_code) = cmd_watcher.exit_code() {
+                if exit_code != 0 && !config.quiet {
+                    println!();
+                    println!(
+                        "{} {} (exit {})",
+                        "Command exited:".yellow().bold(),
+                        interpret_exit_code(exit_code),
+                        exit_code
+                    );
+                }
+            }
+            break;
+        }
+
+        // Check for keyboard input
+        if is_tty && event::poll(Duration::from_millis(50))? {
+            if let Event::Key(key_event) = event::read()? {
+                match key_event.code {
+                    KeyCode::Char('q') => {
+                        cmd_watcher.kill().ok();
+                        session.stop();
+                        break;
+                    }
+                    KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                        cmd_watcher.kill().ok();
+                        session.stop();
+                        break;
+                    }
+                    KeyCode::Char('p') => {
+                        session.toggle_pause();
+                        if !config.quiet {
+                            if session.is_paused() {
+                                println!("{}", "Paused (output continues, errors not explained). Press 'p' to resume.".yellow());
+                            } else {
+                                println!("{}", "Resumed.".green());
+                            }
+                        }
+                    }
+                    KeyCode::Char('d') => {
+                        session.toggle_dedup();
+                        if !config.quiet {
+                            println!(
+                                "Dedup {}",
+                                if session.config().dedup {
+                                    "enabled".green()
+                                } else {
+                                    "disabled".red()
+                                }
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Process incoming lines
+        while let Ok(line) = line_rx.try_recv() {
+            if let Some(error) = session.process_line(&line) {
+                process_detected_error(&error, &mut session, cli, model_info, &config)?;
+            }
+        }
+
+        // Small sleep to avoid busy loop
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    // Wait for threads
+    if let Some(handle) = stderr_handle {
+        let _ = handle.join();
+    }
+    if let Some(handle) = stdout_handle {
+        let _ = handle.join();
+    }
+
+    // Cleanup
+    if is_tty {
+        terminal::disable_raw_mode().ok();
+    }
+
+    if !config.quiet {
+        println!();
+        println!("{} {}", "▸".green(), "Watch mode ended".green().bold());
+        println!("  {}", session.status());
+        println!();
+    }
+
+    Ok(())
+}
+
+/// Process a detected error in watch mode
+fn process_detected_error(
+    error: &DetectedError,
+    session: &mut WatchSession,
+    cli: &Cli,
+    model_info: &ModelPathInfo,
+    config: &WatchConfig,
+) -> Result<()> {
+    if config.clear {
+        print!("\x1B[2J\x1B[1;1H");
+        io::stdout().flush().ok();
+    }
+
+    if !config.quiet {
+        print_error_separator(session.error_count);
+    }
+
+    // Run inference on the error
+    let model_path = &model_info.path;
+    let (model_family, _) = if let Some(family) = cli.template {
+        (family, "override".to_string())
+    } else if let Some(family) = model_info.embedded_family {
+        (family, "embedded".to_string())
+    } else {
+        let detected = detect_model_family(model_path);
+        (detected, "auto".to_string())
+    };
+
+    let prompt = build_prompt(&error.content, model_family);
+
+    // Run inference with streaming if enabled
+    let callback: Option<TokenCallback> = if cli.stream && !cli.json {
+        Some(Box::new(|token: &str| {
+            print!("{}", token);
+            io::stdout().flush().ok();
+            Ok(true)
+        }))
+    } else {
+        None
+    };
+
+    let params = SamplingParams::default();
+    match run_inference_with_callback(model_path, &prompt, &params, callback) {
+        Ok((response, _stats)) => {
+            if !cli.stream || cli.json {
+                let result = parse_response(&error.content, &response);
+                if cli.json {
+                    let payload = serde_json::json!({
+                        "input": error.content,
+                        "error": result.error,
+                        "summary": result.summary,
+                        "explanation": result.explanation,
+                        "suggestion": result.suggestion
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                } else {
+                    print_colored(&result);
+                }
+            } else {
+                // Streaming mode - output already printed
+                println!();
+            }
+            session.mark_explained();
+        }
+        Err(e) => {
+            eprintln!(
+                "{} Failed to explain error: {}",
+                "Warning:".yellow().bold(),
+                e
+            );
         }
     }
 
-    let message = format!(
-        "{} {}\n{} {}\n  1. Use --model <path> to specify a GGUF model\n  2. Place model.gguf in current directory\n  3. Embed model: ./scripts/embed.sh target/release/why model.gguf why-embedded",
-        "Error:".red().bold(),
-        "No model found.",
-        "Tip:".blue().bold(),
-        "Either:"
+    Ok(())
+}
+
+/// Determine if watch target is a file or command
+fn is_file_target(target: &str) -> bool {
+    let path = Path::new(target);
+    // If it contains path separators or exists as a file, treat as file
+    path.exists() || target.contains('/') || target.contains('\\')
+}
+
+/// Run watch mode
+fn run_watch_mode(target: &str, cli: &Cli, model_info: &ModelPathInfo) -> Result<()> {
+    let config = WatchConfig {
+        debounce_ms: cli.debounce,
+        dedup: !cli.no_dedup,
+        dedup_ttl: Duration::from_secs(300),
+        pattern: cli.pattern.as_ref().map(|p| Regex::new(p)).transpose()?,
+        clear: cli.clear,
+        quiet: cli.quiet,
+        max_aggregation_lines: 50,
+    };
+
+    if is_file_target(target) {
+        run_file_watch(PathBuf::from(target), config, cli, model_info)
+    } else {
+        run_command_watch(target, config, cli, model_info)
+    }
+}
+
+// ============================================================================
+// Daemon Mode (Feature 5)
+// ============================================================================
+
+/// Default connection timeout for daemon client
+const DAEMON_CONNECTION_TIMEOUT_MS: u64 = 1000;
+
+/// Default grace period for daemon shutdown
+const DAEMON_SHUTDOWN_GRACE_MS: u64 = 5000;
+
+pub fn is_daemon_running() -> bool {
+    let socket_path = get_socket_path();
+    if !socket_path.exists() {
+        return false;
+    }
+
+    // Try to connect with short timeout
+    match UnixStream::connect(&socket_path) {
+        Ok(stream) => {
+            // Set short timeout
+            stream
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .ok();
+            stream
+                .set_write_timeout(Some(Duration::from_millis(100)))
+                .ok();
+
+            // Try to send a ping
+            use std::io::Write;
+            let request = DaemonRequest {
+                action: DaemonAction::Ping,
+                input: None,
+                options: None,
+            };
+            if let Ok(json) = serde_json::to_string(&request) {
+                let mut writer = std::io::BufWriter::new(&stream);
+                if writeln!(writer, "{}", json).is_ok() && writer.flush().is_ok() {
+                    // Try to read response
+                    let mut reader = std::io::BufReader::new(&stream);
+                    let mut line = String::new();
+                    if std::io::BufRead::read_line(&mut reader, &mut line).is_ok() {
+                        if let Ok(response) = serde_json::from_str::<DaemonResponse>(&line) {
+                            return response.response_type == DaemonResponseType::Pong;
+                        }
+                    }
+                }
+            }
+            false
+        }
+        Err(_) => false,
+    }
+}
+
+/// Non-Unix stub for is_daemon_running
+#[cfg(not(unix))]
+pub fn is_daemon_running() -> bool {
+    false
+}
+
+/// Read PID from PID file
+#[cfg(unix)]
+pub fn read_daemon_pid() -> Option<u32> {
+    let pid_path = get_pid_path();
+    std::fs::read_to_string(pid_path)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
+
+/// Check if a process with given PID is running
+#[cfg(unix)]
+pub fn is_process_running(pid: u32) -> bool {
+    // Send signal 0 to check if process exists
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// Send a request to the daemon and get responses
+#[cfg(unix)]
+pub fn send_daemon_request(request: &DaemonRequest) -> Result<Vec<DaemonResponse>> {
+    let socket_path = get_socket_path();
+    let stream = UnixStream::connect(&socket_path)
+        .with_context(|| format!("Failed to connect to daemon at {}", socket_path.display()))?;
+
+    stream.set_read_timeout(Some(Duration::from_secs(60))).ok();
+    stream
+        .set_write_timeout(Some(Duration::from_millis(DAEMON_CONNECTION_TIMEOUT_MS)))
+        .ok();
+
+    // Send request
+    let json = serde_json::to_string(request)?;
+    {
+        use std::io::Write;
+        let mut writer = std::io::BufWriter::new(&stream);
+        writeln!(writer, "{}", json)?;
+        writer.flush()?;
+    }
+
+    // Read responses (may be multiple for streaming)
+    let mut responses = Vec::new();
+    let reader = std::io::BufReader::new(&stream);
+    for line in std::io::BufRead::lines(reader) {
+        let line = line?;
+        if line.is_empty() {
+            continue;
+        }
+        let response: DaemonResponse = serde_json::from_str(&line)
+            .with_context(|| format!("Invalid daemon response: {}", line))?;
+
+        let is_final = matches!(
+            response.response_type,
+            DaemonResponseType::Complete
+                | DaemonResponseType::Error
+                | DaemonResponseType::Pong
+                | DaemonResponseType::Stats
+                | DaemonResponseType::ShutdownAck
+        );
+
+        responses.push(response);
+
+        if is_final {
+            break;
+        }
+    }
+
+    Ok(responses)
+}
+
+/// Non-Unix stub
+#[cfg(not(unix))]
+pub fn send_daemon_request(_request: &DaemonRequest) -> Result<Vec<DaemonResponse>> {
+    bail!("Daemon mode is not supported on this platform")
+}
+
+/// Handle daemon subcommand
+#[cfg(unix)]
+fn handle_daemon_command(cmd: &DaemonCommand, cli: &Cli) -> Result<()> {
+    match cmd {
+        DaemonCommand::Start {
+            foreground,
+            idle_timeout,
+        } => daemon_start(*foreground, *idle_timeout, cli),
+        DaemonCommand::Stop { force } => daemon_stop(*force),
+        DaemonCommand::Restart { foreground } => daemon_restart(*foreground, cli),
+        DaemonCommand::Status => daemon_status(),
+        DaemonCommand::InstallService => daemon_install_service(),
+        DaemonCommand::UninstallService => daemon_uninstall_service(),
+    }
+}
+
+/// Non-Unix stub for daemon command handler
+#[cfg(not(unix))]
+fn handle_daemon_command(_cmd: &DaemonCommand, _cli: &Cli) -> Result<()> {
+    bail!("Daemon mode is not supported on this platform")
+}
+
+/// Start the daemon
+#[cfg(unix)]
+fn daemon_start(foreground: bool, idle_timeout: u64, cli: &Cli) -> Result<()> {
+    // Check if daemon is already running
+    if is_daemon_running() {
+        println!("{} Daemon is already running", "✓".green());
+        return Ok(());
+    }
+
+    // Clean up stale socket if exists
+    let socket_path = get_socket_path();
+    if socket_path.exists() {
+        std::fs::remove_file(&socket_path).ok();
+    }
+
+    if foreground {
+        // Run in foreground
+        run_daemon_foreground(idle_timeout, cli)
+    } else {
+        // Fork and daemonize
+        daemon_fork(idle_timeout)
+    }
+}
+
+/// Fork and run daemon in background
+#[cfg(unix)]
+fn daemon_fork(idle_timeout: u64) -> Result<()> {
+    use std::process::Command;
+
+    // Get current executable path
+    let exe = env::current_exe()?;
+
+    // Spawn child process
+    let mut child = Command::new(exe)
+        .args([
+            "daemon",
+            "start",
+            "--foreground",
+            "--idle-timeout",
+            &idle_timeout.to_string(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("Failed to spawn daemon process")?;
+
+    // Wait briefly for socket to become available
+    let socket_path = get_socket_path();
+    let start = Instant::now();
+    let timeout = Duration::from_secs(10);
+
+    while start.elapsed() < timeout {
+        if socket_path.exists() && is_daemon_running() {
+            println!(
+                "{} {}",
+                "✓".green(),
+                "Daemon started successfully".green().bold()
+            );
+            println!("  {} {}", "Socket:".blue().bold(), socket_path.display());
+            if let Some(pid) = read_daemon_pid() {
+                println!("  {} {}", "PID:".blue().bold(), pid);
+            }
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // Daemon didn't start in time
+    let _ = child.kill();
+    bail!("Daemon failed to start within timeout")
+}
+
+/// Run daemon in foreground
+#[cfg(unix)]
+fn run_daemon_foreground(idle_timeout: u64, cli: &Cli) -> Result<()> {
+    // Get model path
+    let model_info = get_model_path(cli.model.as_ref())?;
+
+    // Create socket
+    let socket_path = get_socket_path();
+
+    // Ensure parent directory exists
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+
+    // Remove stale socket
+    if socket_path.exists() {
+        std::fs::remove_file(&socket_path)?;
+    }
+
+    let listener = UnixListener::bind(&socket_path)
+        .with_context(|| format!("Failed to create socket at {}", socket_path.display()))?;
+
+    // Set socket permissions (owner only)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    // Write PID file
+    let pid_path = get_pid_path();
+    std::fs::write(&pid_path, std::process::id().to_string())?;
+
+    println!("{} {}", "▸".cyan(), "Why Daemon".cyan().bold());
+    println!("  {} {}", "Socket:".blue().bold(), socket_path.display());
+    println!("  {} {}", "PID:".blue().bold(), std::process::id());
+    println!(
+        "  {} {} minutes",
+        "Idle timeout:".blue().bold(),
+        idle_timeout
     );
-    bail!(message)
+    println!();
+    println!("Loading model...");
+
+    // Load model
+    let start = Instant::now();
+    let backend = LlamaBackend::init()?;
+    send_logs_to_tracing(LogOptions::default().with_logs_enabled(false));
+
+    let model_params = LlamaModelParams::default();
+    let model = LlamaModel::load_from_file(&backend, &model_info.path, &model_params)
+        .context("Failed to load model")?;
+
+    let load_time = start.elapsed();
+    println!("Model loaded in {:.2}s", load_time.as_secs_f64());
+
+    // Determine model family
+    let model_family = if let Some(family) = cli.template {
+        family
+    } else if let Some(family) = model_info.embedded_family {
+        family
+    } else {
+        detect_model_family(&model_info.path)
+    };
+
+    println!("  {} {:?}", "Model family:".blue().bold(), model_family);
+    println!();
+    println!("Daemon ready. Waiting for connections...");
+    println!();
+
+    // Stats tracking
+    let daemon_start = Instant::now();
+    let mut requests_served: u64 = 0;
+    let mut total_response_time_ms: f64 = 0.0;
+    let mut last_activity = Instant::now();
+
+    // Set listener to non-blocking for idle timeout
+    listener.set_nonblocking(true)?;
+
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+
+    // Handle SIGTERM/SIGINT
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    })
+    .ok();
+
+    // Main loop
+    while running.load(Ordering::SeqCst) {
+        // Check idle timeout
+        let idle_duration = Duration::from_secs(idle_timeout * 60);
+        if last_activity.elapsed() > idle_duration {
+            println!("Idle timeout reached. Shutting down...");
+            break;
+        }
+
+        // Try to accept connection
+        match listener.accept() {
+            Ok((stream, _)) => {
+                last_activity = Instant::now();
+                let request_start = Instant::now();
+
+                // Handle connection
+                if let Err(e) = handle_daemon_connection(
+                    stream,
+                    &model,
+                    &backend,
+                    model_family,
+                    &running,
+                    daemon_start,
+                    requests_served,
+                    total_response_time_ms,
+                ) {
+                    eprintln!("Error handling connection: {}", e);
+                }
+
+                requests_served += 1;
+                total_response_time_ms += request_start.elapsed().as_secs_f64() * 1000.0;
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                // No connection available, sleep briefly
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                eprintln!("Error accepting connection: {}", e);
+            }
+        }
+    }
+
+    // Cleanup
+    println!("Shutting down daemon...");
+    std::fs::remove_file(&socket_path).ok();
+    std::fs::remove_file(&pid_path).ok();
+    println!("Daemon stopped.");
+
+    Ok(())
+}
+
+/// Handle a single daemon connection
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+fn handle_daemon_connection(
+    stream: UnixStream,
+    model: &LlamaModel,
+    backend: &LlamaBackend,
+    model_family: ModelFamily,
+    running: &Arc<AtomicBool>,
+    daemon_start: Instant,
+    requests_served: u64,
+    total_response_time_ms: f64,
+) -> Result<()> {
+    use std::io::{BufRead, Write};
+
+    stream.set_read_timeout(Some(Duration::from_secs(60)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(60)))?;
+
+    let reader = std::io::BufReader::new(&stream);
+    let mut writer = std::io::BufWriter::new(&stream);
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.is_empty() {
+            continue;
+        }
+
+        let request: DaemonRequest = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                let response = DaemonResponse::error(&format!("Invalid request: {}", e));
+                writeln!(writer, "{}", serde_json::to_string(&response)?)?;
+                writer.flush()?;
+                continue;
+            }
+        };
+
+        match request.action {
+            DaemonAction::Ping => {
+                let response = DaemonResponse::pong();
+                writeln!(writer, "{}", serde_json::to_string(&response)?)?;
+                writer.flush()?;
+            }
+            DaemonAction::Shutdown => {
+                let response = DaemonResponse::shutdown_ack();
+                writeln!(writer, "{}", serde_json::to_string(&response)?)?;
+                writer.flush()?;
+                running.store(false, Ordering::SeqCst);
+                return Ok(());
+            }
+            DaemonAction::Stats => {
+                let uptime = daemon_start.elapsed().as_secs();
+                let avg_time = if requests_served > 0 {
+                    total_response_time_ms / requests_served as f64
+                } else {
+                    0.0
+                };
+
+                let stats = DaemonStats {
+                    uptime_seconds: uptime,
+                    requests_served,
+                    avg_response_time_ms: avg_time,
+                    memory_mb: 0.0, // Would need platform-specific code
+                    model_family: format!("{:?}", model_family),
+                    model_loaded: true,
+                };
+                let response = DaemonResponse::stats(stats);
+                writeln!(writer, "{}", serde_json::to_string(&response)?)?;
+                writer.flush()?;
+            }
+            DaemonAction::Explain => {
+                let input = match request.input {
+                    Some(i) => i,
+                    None => {
+                        let response = DaemonResponse::error("Missing input for explain action");
+                        writeln!(writer, "{}", serde_json::to_string(&response)?)?;
+                        writer.flush()?;
+                        continue;
+                    }
+                };
+
+                // Build prompt
+                let prompt = build_prompt(&input, model_family);
+
+                // Create context
+                let ctx_params = LlamaContextParams::default()
+                    .with_n_ctx(NonZeroU32::new(2048))
+                    .with_n_batch(512);
+
+                let mut ctx = model
+                    .new_context(backend, ctx_params)
+                    .context("Failed to create context")?;
+
+                // Tokenize
+                let tokens = model
+                    .str_to_token(&prompt, AddBos::Always)
+                    .context("Failed to tokenize")?;
+
+                let mut batch = LlamaBatch::new(ctx.n_ctx() as usize, 1);
+                for (i, token) in tokens.iter().enumerate() {
+                    let is_last = i == tokens.len() - 1;
+                    batch.add(*token, i as i32, &[0], is_last)?;
+                }
+
+                ctx.decode(&mut batch)?;
+
+                // Generate response
+                let mut sampler =
+                    LlamaSampler::chain_simple([LlamaSampler::temp(0.7), LlamaSampler::dist(42)]);
+
+                let stream_enabled = request.options.as_ref().map(|o| o.stream).unwrap_or(false);
+
+                let mut response_text = String::new();
+                let max_tokens = 512;
+
+                for _ in 0..max_tokens {
+                    let token = sampler.sample(&ctx, -1);
+                    if model.is_eog_token(token) {
+                        break;
+                    }
+
+                    let token_str = model.token_to_str(token, Special::Tokenize)?;
+                    response_text.push_str(&token_str);
+
+                    // Stream token if enabled
+                    if stream_enabled {
+                        let token_response = DaemonResponse::token(&token_str);
+                        writeln!(writer, "{}", serde_json::to_string(&token_response)?)?;
+                        writer.flush()?;
+                    }
+
+                    batch.clear();
+                    batch.add(token, tokens.len() as i32, &[0], true)?;
+                    ctx.decode(&mut batch)?;
+                }
+
+                // Parse and send final response
+                let result = parse_response(&input, &response_text);
+                let explanation = ErrorExplanationResponse::from(&result);
+                let response = DaemonResponse::complete(explanation);
+                writeln!(writer, "{}", serde_json::to_string(&response)?)?;
+                writer.flush()?;
+            }
+        }
+
+        // Only handle one request per connection for simplicity
+        break;
+    }
+
+    Ok(())
+}
+
+/// Stop the daemon
+#[cfg(unix)]
+fn daemon_stop(force: bool) -> Result<()> {
+    if !is_daemon_running() {
+        println!("{} Daemon is not running", "?".yellow());
+        return Ok(());
+    }
+
+    // Try graceful shutdown first
+    let request = DaemonRequest {
+        action: DaemonAction::Shutdown,
+        input: None,
+        options: None,
+    };
+
+    match send_daemon_request(&request) {
+        Ok(responses) => {
+            if responses
+                .iter()
+                .any(|r| r.response_type == DaemonResponseType::ShutdownAck)
+            {
+                println!(
+                    "{} {}",
+                    "✓".green(),
+                    "Daemon stopped gracefully".green().bold()
+                );
+
+                // Wait for socket to disappear
+                let socket_path = get_socket_path();
+                let start = Instant::now();
+                while socket_path.exists() && start.elapsed() < Duration::from_secs(5) {
+                    thread::sleep(Duration::from_millis(100));
+                }
+
+                return Ok(());
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: Failed to send shutdown command: {}", e);
+        }
+    }
+
+    // Graceful shutdown failed, try SIGTERM
+    if let Some(pid) = read_daemon_pid() {
+        eprintln!("Sending SIGTERM to PID {}...", pid);
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+
+        // Wait for process to exit
+        let start = Instant::now();
+        let timeout = Duration::from_millis(DAEMON_SHUTDOWN_GRACE_MS);
+        while is_process_running(pid) && start.elapsed() < timeout {
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        if !is_process_running(pid) {
+            println!("{} {}", "✓".green(), "Daemon stopped".green().bold());
+
+            // Clean up files
+            std::fs::remove_file(get_socket_path()).ok();
+            std::fs::remove_file(get_pid_path()).ok();
+            return Ok(());
+        }
+
+        // SIGTERM failed, try SIGKILL if force
+        if force {
+            eprintln!("Sending SIGKILL to PID {}...", pid);
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+            thread::sleep(Duration::from_millis(500));
+
+            // Clean up files
+            std::fs::remove_file(get_socket_path()).ok();
+            std::fs::remove_file(get_pid_path()).ok();
+
+            println!(
+                "{} {}",
+                "✓".yellow(),
+                "Daemon killed forcefully".yellow().bold()
+            );
+            return Ok(());
+        }
+    }
+
+    bail!("Failed to stop daemon")
+}
+
+/// Restart the daemon
+#[cfg(unix)]
+fn daemon_restart(foreground: bool, cli: &Cli) -> Result<()> {
+    // Stop if running
+    if is_daemon_running() {
+        daemon_stop(false)?;
+        // Wait a bit for cleanup
+        thread::sleep(Duration::from_millis(500));
+    }
+
+    // Start
+    daemon_start(foreground, 30, cli)
+}
+
+/// Show daemon status
+#[cfg(unix)]
+fn daemon_status() -> Result<()> {
+    let socket_path = get_socket_path();
+    let pid_path = get_pid_path();
+
+    println!();
+    println!("{} {}", "▸".cyan(), "Daemon Status".cyan().bold());
+
+    // Check socket
+    println!("  {} {}", "Socket:".blue().bold(), socket_path.display());
+    println!(
+        "    Exists: {}",
+        if socket_path.exists() {
+            "yes".green()
+        } else {
+            "no".red()
+        }
+    );
+
+    // Check PID file
+    println!("  {} {}", "PID file:".blue().bold(), pid_path.display());
+    if let Some(pid) = read_daemon_pid() {
+        println!("    PID: {}", pid);
+        println!(
+            "    Process running: {}",
+            if is_process_running(pid) {
+                "yes".green()
+            } else {
+                "no".red()
+            }
+        );
+    } else {
+        println!("    {}", "No PID file".dimmed());
+    }
+
+    // Check connectivity
+    println!(
+        "  {} {}",
+        "Status:".blue().bold(),
+        if is_daemon_running() {
+            "Running".green().bold()
+        } else {
+            "Not running".red().bold()
+        }
+    );
+
+    // Get stats if running
+    if is_daemon_running() {
+        let request = DaemonRequest {
+            action: DaemonAction::Stats,
+            input: None,
+            options: None,
+        };
+
+        if let Ok(responses) = send_daemon_request(&request) {
+            for response in responses {
+                if let Some(stats) = response.stats {
+                    println!();
+                    println!(
+                        "  {} {}",
+                        "Uptime:".blue().bold(),
+                        format_duration(stats.uptime_seconds)
+                    );
+                    println!(
+                        "  {} {}",
+                        "Requests served:".blue().bold(),
+                        stats.requests_served
+                    );
+                    if stats.requests_served > 0 {
+                        println!(
+                            "  {} {:.1}ms",
+                            "Avg response time:".blue().bold(),
+                            stats.avg_response_time_ms
+                        );
+                    }
+                    println!("  {} {}", "Model family:".blue().bold(), stats.model_family);
+                }
+            }
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+/// Format duration in human-readable form
+fn format_duration(seconds: u64) -> String {
+    if seconds < 60 {
+        format!("{}s", seconds)
+    } else if seconds < 3600 {
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{}h {}m", seconds / 3600, (seconds % 3600) / 60)
+    }
+}
+
+/// Install system service
+#[cfg(unix)]
+fn daemon_install_service() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        install_launchd_service()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        install_systemd_service()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        bail!("Service installation not supported on this platform")
+    }
+}
+
+/// Install launchd service (macOS)
+#[cfg(target_os = "macos")]
+fn install_launchd_service() -> Result<()> {
+    let plist_path = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
+        .join("Library")
+        .join("LaunchAgents")
+        .join("com.why.daemon.plist");
+
+    // Get current executable path
+    let exe = env::current_exe()?.display().to_string();
+
+    let plist_content = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.why.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{}</string>
+        <string>daemon</string>
+        <string>start</string>
+        <string>--foreground</string>
+    </array>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>
+"#,
+        exe
+    );
+
+    // Ensure directory exists
+    if let Some(parent) = plist_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    std::fs::write(&plist_path, plist_content)?;
+
+    println!(
+        "{} {}",
+        "✓".green(),
+        "Launchd service installed".green().bold()
+    );
+    println!("  {} {}", "Plist:".blue().bold(), plist_path.display());
+    println!();
+    println!("  To load the service:");
+    println!("    launchctl load {}", plist_path.display());
+    println!();
+    println!("  To start the service:");
+    println!("    launchctl start com.why.daemon");
+    println!();
+
+    Ok(())
+}
+
+/// Install systemd service (Linux)
+#[cfg(target_os = "linux")]
+fn install_systemd_service() -> Result<()> {
+    let service_path = dirs::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?
+        .join("systemd")
+        .join("user")
+        .join("why.service");
+
+    // Get current executable path
+    let exe = env::current_exe()?.display().to_string();
+
+    let service_content = format!(
+        r#"[Unit]
+Description=Why Error Explainer Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={} daemon start --foreground
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"#,
+        exe
+    );
+
+    // Ensure directory exists
+    if let Some(parent) = service_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    std::fs::write(&service_path, service_content)?;
+
+    println!(
+        "{} {}",
+        "✓".green(),
+        "Systemd service installed".green().bold()
+    );
+    println!(
+        "  {} {}",
+        "Service file:".blue().bold(),
+        service_path.display()
+    );
+    println!();
+    println!("  To enable and start:");
+    println!("    systemctl --user daemon-reload");
+    println!("    systemctl --user enable why");
+    println!("    systemctl --user start why");
+    println!();
+
+    Ok(())
+}
+
+/// Uninstall system service
+#[cfg(unix)]
+fn daemon_uninstall_service() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let plist_path = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
+            .join("Library")
+            .join("LaunchAgents")
+            .join("com.why.daemon.plist");
+
+        if plist_path.exists() {
+            // Try to unload first
+            std::process::Command::new("launchctl")
+                .args(["unload", &plist_path.display().to_string()])
+                .output()
+                .ok();
+
+            std::fs::remove_file(&plist_path)?;
+            println!(
+                "{} {}",
+                "✓".green(),
+                "Launchd service uninstalled".green().bold()
+            );
+        } else {
+            println!("{} Service file not found", "?".yellow());
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let service_path = dirs::config_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?
+            .join("systemd")
+            .join("user")
+            .join("why.service");
+
+        if service_path.exists() {
+            // Try to stop and disable first
+            std::process::Command::new("systemctl")
+                .args(["--user", "stop", "why"])
+                .output()
+                .ok();
+            std::process::Command::new("systemctl")
+                .args(["--user", "disable", "why"])
+                .output()
+                .ok();
+
+            std::fs::remove_file(&service_path)?;
+            println!(
+                "{} {}",
+                "✓".green(),
+                "Systemd service uninstalled".green().bold()
+            );
+        } else {
+            println!("{} Service file not found", "?".yellow());
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        bail!("Service uninstallation not supported on this platform")
+    }
+
+    Ok(())
 }
 
 fn get_input(cli: &Cli) -> Result<String> {
@@ -346,547 +1902,91 @@ fn get_input(cli: &Cli) -> Result<String> {
     bail!(message)
 }
 
-/// ChatML template for Qwen and SmolLM models
-const TEMPLATE_CHATML: &str = include_str!("prompts/chatml.txt");
-
-/// Gemma template using <start_of_turn> format
-const TEMPLATE_GEMMA: &str = include_str!("prompts/gemma.txt");
-
-/// Detect model family from filename/path
-fn detect_model_family(model_path: &Path) -> ModelFamily {
-    let filename = model_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    if filename.contains("gemma") {
-        ModelFamily::Gemma
-    } else if filename.contains("smol") || filename.contains("smollm") {
-        ModelFamily::Smollm
-    } else {
-        // Default to Qwen (most common, also works for generic models)
-        ModelFamily::Qwen
-    }
-}
-
-fn build_prompt(error: &str, family: ModelFamily) -> String {
-    let template = match family {
-        ModelFamily::Gemma => TEMPLATE_GEMMA,
-        ModelFamily::Qwen | ModelFamily::Smollm => TEMPLATE_CHATML,
-    };
-    template.replace("{error}", error.trim())
-}
-
-/// Sampling parameters for inference
-#[derive(Clone)]
-struct SamplingParams {
-    temperature: f32,
-    top_p: f32,
-    top_k: i32,
-    seed: Option<u32>,
-}
-
-impl Default for SamplingParams {
-    fn default() -> Self {
-        Self {
-            temperature: 0.7,
-            top_p: 0.9,
-            top_k: 40,
-            seed: None,
-        }
-    }
-}
-
-/// Maximum number of retries when detecting degenerate output
-const MAX_RETRIES: usize = 2;
-
-/// Check if the response contains degenerate patterns (repetitive characters/sequences)
-/// that indicate the model is stuck in a loop
-fn is_degenerate_response(response: &str) -> bool {
-    let response = response.trim();
-
-    // Empty or very short responses aren't degenerate, just empty
-    if response.len() < 20 {
-        return false;
-    }
-
-    // Check 1: Long runs of the same character (e.g., "AAAA..." or "@@@@...")
-    let chars: Vec<char> = response.chars().collect();
-    let mut max_run = 1;
-    let mut current_run = 1;
-    for i in 1..chars.len() {
-        if chars[i] == chars[i - 1] {
-            current_run += 1;
-            max_run = max_run.max(current_run);
-        } else {
-            current_run = 1;
-        }
-    }
-    // More than 20 identical characters in a row is degenerate
-    if max_run > 20 {
-        return true;
-    }
-
-    // Check 2: Short repeating patterns (e.g., "@ @ @ @ " or "ab ab ab ab")
-    // Look for patterns of length 1-4 that repeat many times
-    for pattern_len in 1..=4 {
-        if response.len() >= pattern_len * 10 {
-            let pattern: String = chars.iter().take(pattern_len).collect();
-            let repeated = pattern.repeat(10);
-            if response.contains(&repeated) {
-                return true;
-            }
-        }
-    }
-
-    // Check 3: High single-character dominance
-    // If any single character makes up more than 50% of the response, it's suspicious
-    let mut char_counts = std::collections::HashMap::new();
-    for c in chars.iter() {
-        if !c.is_whitespace() {
-            *char_counts.entry(c).or_insert(0) += 1;
-        }
-    }
-    let non_whitespace_count: usize = char_counts.values().sum();
-    if non_whitespace_count > 0 {
-        if let Some(&max_count) = char_counts.values().max() {
-            if max_count as f64 / non_whitespace_count as f64 > 0.5 {
-                return true;
-            }
-        }
-    }
-
-    // Check 4: Repeating word/token patterns (e.g., "sha256 sha256 sha256")
-    let words: Vec<&str> = response.split_whitespace().collect();
-    if words.len() >= 10 {
-        let mut word_run = 1;
-        let mut max_word_run = 1;
-        for i in 1..words.len() {
-            if words[i] == words[i - 1] {
-                word_run += 1;
-                max_word_run = max_word_run.max(word_run);
-            } else {
-                word_run = 1;
-            }
-        }
-        // More than 5 identical words in a row is degenerate
-        if max_word_run > 5 {
-            return true;
-        }
-
-        // Check 5: Repeating word pairs/triplets (e.g., "RELEASE: REQ: RELEASE: REQ:")
-        for pattern_len in 2..=3 {
-            if words.len() >= pattern_len * 5 {
-                let pattern: Vec<&str> = words.iter().take(pattern_len).copied().collect();
-                let mut matches = 0;
-                for chunk in words.chunks(pattern_len) {
-                    if chunk == pattern.as_slice() {
-                        matches += 1;
-                    }
-                }
-                // If the same word pattern repeats 5+ times, it's degenerate
-                if matches >= 5 {
-                    return true;
-                }
-            }
-        }
-    }
-
-    false
-}
-
-/// Check if the model just echoed the input back (indicates confusion, not an error)
-fn is_echo_response(input: &str, response: &str) -> bool {
-    let response_trimmed = response.trim();
-    let input_trimmed = input.trim();
-    let response_lower = response_trimmed.to_lowercase();
-
-    // If response has our expected structure markers (case-insensitive, with or without markdown)
-    let has_structure = response_lower.contains("summary:")
-        || response_lower.contains("explanation:")
-        || response_lower.contains("suggestion:")
-        || response_lower.contains("**summary")
-        || response_lower.contains("**explanation")
-        || response_lower.contains("**suggestion");
-
-    if has_structure {
-        return false;
-    }
-
-    // Check if response starts with significant portion of input (echo detection)
-    let input_start: String = input_trimmed.chars().take(100).collect();
-    let response_start: String = response_trimmed.chars().take(100).collect();
-
-    // If first 100 chars match closely, it's likely an echo
-    if input_start == response_start {
-        return true;
-    }
-
-    // Check if response is suspiciously similar in length and content
-    let input_lines: Vec<&str> = input_trimmed.lines().take(3).collect();
-    let response_lines: Vec<&str> = response_trimmed.lines().take(3).collect();
-
-    input_lines == response_lines
-}
-
-/// Extract section label from a line, handling various formats:
-/// - "SUMMARY:" or "SUMMARY"
-/// - "**Summary:**" or "**SUMMARY:**"
-/// - "Summary:" (case-insensitive)
-///
-/// Returns (section_name, rest_of_line) if a label is found.
-fn extract_section_label(line: &str) -> Option<(&'static str, String)> {
-    // Strip markdown bold markers if present
-    let cleaned = line.trim_start_matches("**").trim_start_matches('*');
-    let cleaned_lower = cleaned.to_lowercase();
-
-    for (label, section) in [
-        ("summary", "summary"),
-        ("explanation", "explanation"),
-        ("suggestion", "suggestion"),
-    ] {
-        // Check for "label:" or "label" at start
-        if cleaned_lower.starts_with(label) {
-            let after_label = &cleaned[label.len()..];
-            // Must be followed by ":", "**:", or end of string
-            let rest = if let Some(stripped) = after_label.strip_prefix(':') {
-                stripped.trim_start_matches("**").trim()
-            } else if let Some(stripped) = after_label.strip_prefix("**:") {
-                stripped.trim()
-            } else if after_label.is_empty()
-                || after_label.starts_with("**")
-                || after_label
-                    .chars()
-                    .next()
-                    .map(|c| c.is_whitespace())
-                    .unwrap_or(false)
-            {
-                after_label.trim_start_matches("**").trim()
-            } else {
-                continue;
-            };
-            return Some((section, rest.to_string()));
-        }
-    }
-    None
-}
-
-fn parse_response(error: &str, response: &str) -> ErrorExplanation {
-    let mut summary = String::new();
-    let mut explanation = String::new();
-    let mut suggestion = String::new();
-    let mut current_section = "summary"; // Start with summary since prompt ends with "SUMMARY:"
-
-    for line in response.lines() {
-        let line = line.trim();
-
-        // Check for section headers using flexible matching
-        if let Some((section, rest)) = extract_section_label(line) {
-            current_section = section;
-            let target = match section {
-                "summary" => &mut summary,
-                "explanation" => &mut explanation,
-                "suggestion" => &mut suggestion,
-                _ => &mut summary,
-            };
-            if !rest.is_empty() {
-                *target = rest;
-            }
-        } else if !line.is_empty() {
-            let target = match current_section {
-                "summary" => &mut summary,
-                "explanation" => &mut explanation,
-                "suggestion" => &mut suggestion,
-                _ => &mut summary,
-            };
-            if !target.is_empty() {
-                target.push(' ');
-            }
-            target.push_str(line);
-        }
-    }
-
-    // Fallback if parsing fails completely
-    if summary.is_empty() && explanation.is_empty() && suggestion.is_empty() {
-        explanation = response.trim().to_string();
-        summary = response.lines().next().unwrap_or("").to_string();
-    }
-
-    ErrorExplanation {
-        error: error.to_string(),
-        summary,
-        explanation,
-        suggestion,
-    }
-}
-
-/// Render markdown text to terminal with colored output.
-/// Handles inline code (`code`), code blocks (```), bold (**), and italic (*).
-fn render_markdown(text: &str, width: usize, indent: &str) {
-    let mut in_code_block = false;
-    let mut code_block_content: Vec<String> = Vec::new();
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-
-        // Handle code block delimiters
-        if trimmed.starts_with("```") {
-            if in_code_block {
-                // End of code block - print accumulated content
-                for code_line in &code_block_content {
-                    println!("{indent}  {}", code_line.cyan());
-                }
-                code_block_content.clear();
-                in_code_block = false;
-            } else {
-                // Start of code block
-                in_code_block = true;
-            }
-            continue;
-        }
-
-        if in_code_block {
-            code_block_content.push(line.to_string());
-            continue;
-        }
-
-        // Process inline markdown for regular text
-        let processed = render_inline_markdown(line);
-
-        // Wrap and print
-        for wrapped_line in textwrap::wrap(&processed, width.saturating_sub(indent.len())) {
-            println!("{indent}{wrapped_line}");
-        }
-    }
-
-    // Handle unclosed code block
-    if in_code_block {
-        for code_line in &code_block_content {
-            println!("{indent}  {}", code_line.cyan());
-        }
-    }
-}
-
-/// Process inline markdown: `code`, **bold**, *italic*
-fn render_inline_markdown(text: &str) -> String {
-    let mut result = String::new();
-    let mut chars = text.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == '`' {
-            // Inline code
-            let mut code = String::new();
-            while let Some(&next) = chars.peek() {
-                if next == '`' {
-                    chars.next();
-                    break;
-                }
-                code.push(chars.next().unwrap());
-            }
-            result.push_str(&code.cyan().to_string());
-        } else if c == '*' {
-            if chars.peek() == Some(&'*') {
-                // Bold
-                chars.next();
-                let mut bold_text = String::new();
-                while let Some(&next) = chars.peek() {
-                    if next == '*' {
-                        chars.next();
-                        if chars.peek() == Some(&'*') {
-                            chars.next();
-                        }
-                        break;
-                    }
-                    bold_text.push(chars.next().unwrap());
-                }
-                result.push_str(&bold_text.bold().to_string());
-            } else {
-                // Italic
-                let mut italic_text = String::new();
-                while let Some(&next) = chars.peek() {
-                    if next == '*' {
-                        chars.next();
-                        break;
-                    }
-                    italic_text.push(chars.next().unwrap());
-                }
-                result.push_str(&italic_text.italic().to_string());
-            }
-        } else {
-            result.push(c);
-        }
-    }
-
-    result
-}
-
-fn print_colored(result: &ErrorExplanation) {
-    // Get terminal width, default to 80
-    let width = textwrap::termwidth().min(100);
-
-    println!();
-    println!("{} {}", "●".red(), result.error.bold());
-    println!();
-
-    if !result.summary.is_empty() {
-        let processed = render_inline_markdown(&result.summary);
-        for line in textwrap::wrap(&processed, width) {
-            println!("{}", line.white().bold());
-        }
-        println!();
-    }
-
-    if !result.explanation.is_empty() {
-        println!("{} {}", "▸".blue(), "Explanation".blue().bold());
-        render_markdown(&result.explanation, width, "  ");
-        println!();
-    }
-
-    if !result.suggestion.is_empty() {
-        println!("{} {}", "▸".green(), "Suggestion".green().bold());
-        render_markdown(&result.suggestion, width, "  ");
-        println!();
-    }
-}
-
-fn run_inference(
-    model_path: &PathBuf,
-    prompt: &str,
-    params: &SamplingParams,
-) -> Result<(String, InferenceStats)> {
-    let total_start = Instant::now();
-    let backend = LlamaBackend::init()?;
-
-    let model_params = LlamaModelParams::default().with_n_gpu_layers(1000);
-    let model_load_start = Instant::now();
-    let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
-        .with_context(|| "Failed to load model")?;
-
-    let ctx_params = LlamaContextParams::default().with_n_ctx(Some(NonZeroU32::new(2048).unwrap()));
-
-    let mut ctx = model
-        .new_context(&backend, ctx_params)
-        .with_context(|| "Failed to create context")?;
-    let model_load_ms = model_load_start.elapsed().as_millis();
-
-    let prompt_eval_start = Instant::now();
-    let mut tokens = model
-        .str_to_token(prompt, AddBos::Always)
-        .with_context(|| "Failed to tokenize")?;
-
-    // Truncate if input exceeds context window (leave room for generation)
-    let max_prompt_tokens = 1500;
-    if tokens.len() > max_prompt_tokens {
-        eprintln!(
-            "{}",
-            format!(
-                "Input truncated from {} to {} tokens",
-                tokens.len(),
-                max_prompt_tokens
-            )
-            .dimmed()
-        );
-        tokens.truncate(max_prompt_tokens);
-    }
-
-    // Batch size must accommodate all prompt tokens plus room for generation
-    let batch_size = tokens.len().max(512);
-    let mut batch = LlamaBatch::new(batch_size, 1);
-    let last_idx = (tokens.len() - 1) as i32;
-
-    for (i, token) in tokens.iter().enumerate() {
-        batch.add(*token, i as i32, &[0], i as i32 == last_idx)?;
-    }
-
-    ctx.decode(&mut batch)?;
-    let prompt_eval_ms = prompt_eval_start.elapsed().as_millis();
-
-    // Use provided seed or generate one from system time
-    let seed = params.seed.unwrap_or_else(|| {
-        let t = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        (t ^ (t >> 32)) as u32
-    });
-
-    let mut sampler = LlamaSampler::chain_simple([
-        LlamaSampler::top_k(params.top_k),
-        LlamaSampler::top_p(params.top_p, 1),
-        LlamaSampler::temp(params.temperature),
-        LlamaSampler::dist(seed),
-    ]);
-
-    let mut decoder = encoding_rs::UTF_8.new_decoder();
-    let max_gen_tokens = 512;
-    let mut n_cur = batch.n_tokens();
-    let start_n = n_cur;
-    let mut output = String::new();
-
-    let generation_start = Instant::now();
-    while can_generate_more(start_n, n_cur, max_gen_tokens) {
-        let token = sampler.sample(&ctx, batch.n_tokens() - 1);
-        sampler.accept(token);
-
-        if model.is_eog_token(token) {
-            break;
-        }
-
-        let bytes = model.token_to_bytes(token, Special::Tokenize)?;
-        let mut token_str = String::with_capacity(32);
-        let _ = decoder.decode_to_string(&bytes, &mut token_str, false);
-        output.push_str(&token_str);
-
-        batch.clear();
-        batch.add(token, n_cur, &[0], true)?;
-        ctx.decode(&mut batch)?;
-        n_cur += 1;
-    }
-
-    let generation_ms = generation_start.elapsed().as_millis();
-    let total_ms = total_start.elapsed().as_millis();
-    let prompt_tokens = tokens.len();
-    let generated_tokens = (n_cur - start_n).max(0) as usize;
-    let total_tokens = prompt_tokens + generated_tokens;
-    let gen_tok_per_s = if generation_ms == 0 {
-        0.0
-    } else {
-        (generated_tokens as f64) / (generation_ms as f64 / 1000.0)
-    };
-    let total_tok_per_s = if total_ms == 0 {
-        0.0
-    } else {
-        (total_tokens as f64) / (total_ms as f64 / 1000.0)
-    };
-
-    Ok((
-        output,
-        InferenceStats {
-            backend: backend_mode().to_string(),
-            prompt_tokens,
-            generated_tokens,
-            total_tokens,
-            model_load_ms,
-            prompt_eval_ms,
-            generation_ms,
-            total_ms,
-            gen_tok_per_s,
-            total_tok_per_s,
-        },
-    ))
-}
-
-fn can_generate_more(start_n: i32, n_cur: i32, max_gen_tokens: i32) -> bool {
-    n_cur.saturating_sub(start_n) < max_gen_tokens
-}
-
 fn print_completions(shell: Shell) {
     let mut cmd = Cli::command();
     generate(shell, &mut cmd, "why", &mut io::stdout());
 }
 
-#[allow(clippy::print_literal)]
+/// Generate shell hook script for automatic error explanation
+fn print_hook(shell: Shell) {
+    match shell {
+        Shell::Bash => print_bash_hook(),
+        Shell::Zsh => print_zsh_hook(),
+        Shell::Fish => print_fish_hook(),
+        _ => {
+            eprintln!(
+                "{} Shell hooks are only supported for bash, zsh, and fish.",
+                "Error:".red().bold()
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_bash_hook() {
+    println!(
+        r#"# why - shell hook for bash
+# Add this to your ~/.bashrc:
+#   eval "$(why --hook bash)"
+
+__why_prompt_command() {{
+    local exit_code=$?
+    if [[ $exit_code -ne 0 && $exit_code -ne 130 ]]; then
+        # 130 = Ctrl+C, don't explain
+        why --exit-code $exit_code --last-command "$(fc -ln -1 2>/dev/null | sed 's/^[[:space:]]*//')"
+    fi
+    return $exit_code
+}}
+
+# Preserve existing PROMPT_COMMAND
+if [[ -z "$PROMPT_COMMAND" ]]; then
+    PROMPT_COMMAND="__why_prompt_command"
+else
+    PROMPT_COMMAND="__why_prompt_command; $PROMPT_COMMAND"
+fi
+"#
+    );
+}
+
+fn print_zsh_hook() {
+    println!(
+        r#"# why - shell hook for zsh
+# Add this to your ~/.zshrc:
+#   eval "$(why --hook zsh)"
+
+__why_precmd() {{
+    local exit_code=$?
+    if [[ $exit_code -ne 0 && $exit_code -ne 130 ]]; then
+        # 130 = Ctrl+C, don't explain
+        why --exit-code $exit_code --last-command "${{history[$HISTCMD]}}"
+    fi
+    return $exit_code
+}}
+
+# Add to precmd hooks
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd __why_precmd
+"#
+    );
+}
+
+fn print_fish_hook() {
+    println!(
+        r#"# why - shell hook for fish
+# Add this to your ~/.config/fish/config.fish:
+#   why --hook fish | source
+
+function __why_prompt --on-event fish_prompt
+    set -l exit_code $status
+    if test $exit_code -ne 0 -a $exit_code -ne 130
+        # 130 = Ctrl+C, don't explain
+        why --exit-code $exit_code --last-command "$history[1]"
+    end
+end
+"#
+    );
+}
+
 fn print_model_list() {
     println!("{}", "Available Model Variants".bold());
     println!();
@@ -903,27 +2003,26 @@ fn print_model_list() {
         "Description".blue().bold()
     );
     println!(
-        "  {:<20} {:<12} {}",
-        "───────────────────", "──────────", "─────────────────────────────────────"
+        "  {:<20} {:<12} ─────────────────────────────────────",
+        "───────────────────", "──────────"
     );
     println!(
-        "  {:<20} {:<12} {} {}",
+        "  {:<20} {:<12} Qwen2.5-Coder 0.5B - best quality {}",
         "why-qwen2_5-coder",
         "~530MB",
-        "Qwen2.5-Coder 0.5B - best quality",
         "(default)".dimmed()
     );
     println!(
-        "  {:<20} {:<12} {}",
-        "why-qwen3", "~639MB", "Qwen3 0.6B - newest Qwen"
+        "  {:<20} {:<12} Qwen3 0.6B - newest Qwen",
+        "why-qwen3", "~639MB"
     );
     println!(
-        "  {:<20} {:<12} {}",
-        "why-gemma3", "~292MB", "Gemma 3 270M - Google"
+        "  {:<20} {:<12} Gemma 3 270M - Google",
+        "why-gemma3", "~292MB"
     );
     println!(
-        "  {:<20} {:<12} {}",
-        "why-smollm2", "~145MB", "SmolLM2 135M - smallest/fastest"
+        "  {:<20} {:<12} SmolLM2 135M - smallest/fastest",
+        "why-smollm2", "~145MB"
     );
     println!();
     println!("{}", "Template Families".bold());
@@ -933,17 +2032,9 @@ fn print_model_list() {
         "--template <family>".cyan()
     );
     println!();
-    println!(
-        "  {:<12} {}",
-        "qwen".green(),
-        "ChatML format (Qwen, SmolLM)"
-    );
-    println!(
-        "  {:<12} {}",
-        "gemma".green(),
-        "Gemma format (<start_of_turn>)"
-    );
-    println!("  {:<12} {}", "smollm".green(), "ChatML format (alias)");
+    println!("  {:<12} ChatML format (Qwen, SmolLM)", "qwen".green());
+    println!("  {:<12} Gemma format (<start_of_turn>)", "gemma".green());
+    println!("  {:<12} ChatML format (alias)", "smollm".green());
     println!();
 }
 
@@ -959,13 +2050,285 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Handle --hook
+    if let Some(shell) = cli.hook {
+        print_hook(shell);
+        return Ok(());
+    }
+
     // Handle --list-models
     if cli.list_models {
         print_model_list();
         return Ok(());
     }
 
-    let input = get_input(&cli)?;
+    // Handle --hook-config
+    if cli.hook_config {
+        print_hook_config();
+        return Ok(());
+    }
+
+    // Handle --hook-install
+    if let Some(shell) = cli.hook_install {
+        return install_hook(shell);
+    }
+
+    // Handle --hook-uninstall
+    if let Some(shell) = cli.hook_uninstall {
+        return uninstall_hook(shell);
+    }
+
+    // Handle --watch mode
+    if let Some(ref target) = cli.watch {
+        let model_info = get_model_path(cli.model.as_ref())?;
+        return run_watch_mode(target, &cli, &model_info);
+    }
+
+    // Handle daemon subcommand
+    if let Some(ref daemon_cmd) = cli.daemon {
+        return handle_daemon_command(daemon_cmd, &cli);
+    }
+
+    // Load configuration (with env overrides)
+    let mut config = Config::load();
+    config.apply_env_overrides();
+
+    // Check if hook is disabled via environment variable
+    if Config::is_hook_disabled() && (cli.capture || cli.exit_code.is_some()) {
+        // Hook mode is disabled, just pass through
+        return Ok(());
+    }
+
+    // Handle --capture mode
+    if cli.capture {
+        let result = run_capture_command(&cli.error, cli.capture_all)?;
+
+        // Check if this exit code should be skipped (from config)
+        if config.should_skip_exit_code(result.exit_code) {
+            return Ok(());
+        }
+
+        // Check if command matches ignore patterns
+        if config.should_ignore_command(&result.command) {
+            return Ok(());
+        }
+
+        // Build input from captured output
+        let captured_output = if cli.capture_all && !result.stdout.is_empty() {
+            format!("{}\n{}", result.stdout, result.stderr)
+        } else {
+            result.stderr.clone()
+        };
+
+        // If no output captured, just report the exit code
+        if captured_output.trim().is_empty() {
+            let interpretation = interpret_exit_code(result.exit_code);
+            println!();
+            println!(
+                "{} {} (exit {})",
+                "Command failed:".red().bold(),
+                interpretation,
+                result.exit_code
+            );
+            return Ok(());
+        }
+
+        // Handle confirmation mode
+        // Priority: --auto CLI flag > config auto_explain > --confirm CLI flag
+        let auto_explain = cli.auto || config.hook.auto_explain;
+        if cli.confirm && !auto_explain {
+            // Check if stdin is a terminal for interactive prompting
+            if std::io::stdin().is_terminal() {
+                if !prompt_confirm(&result.command, result.exit_code, &captured_output) {
+                    return Ok(());
+                }
+            } else {
+                // Non-interactive: check for error patterns to decide
+                if !contains_error_patterns(&captured_output) {
+                    // No obvious errors and non-interactive, skip
+                    return Ok(());
+                }
+            }
+        }
+
+        // Check min_stderr_lines from config
+        if captured_output.lines().count() < config.hook.min_stderr_lines {
+            return Ok(());
+        }
+
+        // Build enhanced input with command context
+        let input = format!(
+            "Command: {}\nExit code: {} ({})\n\nOutput:\n{}",
+            result.command,
+            result.exit_code,
+            interpret_exit_code(result.exit_code),
+            captured_output.trim()
+        );
+
+        // Now run the normal explanation flow with this input
+        // Parse stack trace from captured output
+        let registry = StackTraceParserRegistry::with_builtins();
+        let parsed_stack_trace = registry.parse(&captured_output);
+
+        // If --show-frames is requested, display parsed frames
+        if cli.show_frames {
+            if let Some(ref trace) = parsed_stack_trace {
+                print_frames(trace);
+            }
+        }
+
+        let model_info = get_model_path(cli.model.as_ref())?;
+        let model_path = &model_info.path;
+
+        let (model_family, _family_source) = if let Some(family) = cli.template {
+            (family, "override".to_string())
+        } else if let Some(family) = model_info.embedded_family {
+            (family, "embedded".to_string())
+        } else {
+            let detected = detect_model_family(model_path);
+            let filename = model_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
+            (detected, format!("auto-detected from '{}'", filename))
+        };
+
+        let prompt = build_prompt(&input, model_family);
+
+        // Run inference
+        let callback: Option<TokenCallback> = if cli.stream && !cli.json {
+            Some(Box::new(|token: &str| {
+                print!("{}", token);
+                io::stdout().flush().ok();
+                Ok(true)
+            }))
+        } else {
+            None
+        };
+
+        let (response, stats) =
+            run_inference_with_callback(model_path, &prompt, &SamplingParams::default(), callback)?;
+
+        if cli.stream && !cli.json {
+            println!();
+            println!();
+        }
+
+        let parsed = parse_response(&input, &response);
+        let has_content = !parsed.summary.is_empty()
+            || !parsed.explanation.is_empty()
+            || !parsed.suggestion.is_empty();
+
+        if cli.json {
+            let mut payload = serde_json::json!({
+                "command": result.command,
+                "exit_code": result.exit_code,
+                "captured_output": captured_output.trim(),
+                "summary": parsed.summary,
+                "explanation": parsed.explanation,
+                "suggestion": parsed.suggestion
+            });
+            if let Some(ref trace) = parsed_stack_trace {
+                payload["stack_trace"] = serde_json::to_value(StackTraceJson::from(trace))?;
+            }
+            if cli.stats {
+                payload["stats"] = serde_json::to_value(&stats)?;
+            }
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        } else {
+            println!();
+            println!(
+                "{} {} {}",
+                "▸".red(),
+                "Command failed:".red().bold(),
+                result.command.bright_white()
+            );
+            println!(
+                "  {} {} (exit {})",
+                "Status:".blue().bold(),
+                interpret_exit_code(result.exit_code),
+                result.exit_code
+            );
+            println!();
+
+            if has_content {
+                // Print file:line highlighting if we have a root cause frame
+                if let Some(ref trace) = parsed_stack_trace {
+                    if let Some(root_frame) = trace.root_cause_frame() {
+                        if let Some(ref file) = root_frame.file {
+                            println!("{} {}", "▸".cyan(), "Location".cyan().bold());
+                            println!(
+                                "  {}",
+                                format_file_line(file, root_frame.line, root_frame.column)
+                            );
+                            println!();
+                        }
+                    }
+                }
+                print_colored(&parsed);
+            }
+            if cli.stats {
+                print_stats(&stats);
+            }
+        }
+
+        return Ok(());
+    }
+
+    // Build input - enhanced for hook mode
+    let input = if let (Some(exit_code), Some(ref command)) = (cli.exit_code, &cli.last_command) {
+        // Hook mode: build enhanced prompt with command context
+        let interpretation = interpret_exit_code(exit_code);
+        format!(
+            "Command: {}\nExit code: {} ({})\n\nExplain why this command failed.",
+            command.trim(),
+            exit_code,
+            interpretation
+        )
+    } else if cli.exit_code.is_some() || cli.last_command.is_some() {
+        // Partial hook mode - try to use what we have
+        if let Some(exit_code) = cli.exit_code {
+            let interpretation = interpret_exit_code(exit_code);
+            format!(
+                "Exit code: {} ({})\n\nExplain what this exit code means.",
+                exit_code, interpretation
+            )
+        } else if let Some(ref command) = cli.last_command {
+            format!(
+                "Command failed: {}\n\nExplain why this might have failed.",
+                command.trim()
+            )
+        } else {
+            get_input(&cli)?
+        }
+    } else {
+        get_input(&cli)?
+    };
+
+    // Parse stack trace from input (if present)
+    let registry = StackTraceParserRegistry::with_builtins();
+    let parsed_stack_trace = registry.parse(&input);
+
+    // If --show-frames is requested, display parsed frames immediately (even if no inference needed)
+    if cli.show_frames {
+        if let Some(ref trace) = parsed_stack_trace {
+            print_frames(trace);
+        } else {
+            println!();
+            println!(
+                "{} {}",
+                "?".yellow(),
+                "No stack trace detected in input".yellow().bold()
+            );
+            println!();
+            println!(
+                "  {}",
+                "The input does not appear to contain a recognized stack trace format.".dimmed()
+            );
+            println!();
+        }
+    }
+
     let model_info = get_model_path(cli.model.as_ref())?;
     let model_path = &model_info.path;
 
@@ -1031,7 +2394,18 @@ fn main() -> Result<()> {
     let mut retries = 0;
 
     loop {
-        (response, stats) = run_inference(model_path, &prompt, &params)?;
+        // Create streaming callback if streaming mode is enabled
+        let callback: Option<TokenCallback> = if cli.stream && !cli.json {
+            Some(Box::new(|token: &str| {
+                print!("{}", token);
+                io::stdout().flush().ok();
+                Ok(true)
+            }))
+        } else {
+            None
+        };
+
+        (response, stats) = run_inference_with_callback(model_path, &prompt, &params, callback)?;
 
         // Check for degenerate output (repetitive patterns)
         if is_degenerate_response(&response) {
@@ -1078,6 +2452,12 @@ fn main() -> Result<()> {
         break;
     }
 
+    // Add newline after streaming output
+    if cli.stream && !cli.json {
+        println!();
+        println!();
+    }
+
     if cli.debug {
         print_debug_section(
             "Raw Response",
@@ -1108,6 +2488,10 @@ fn main() -> Result<()> {
                 "no_error": true,
                 "message": "No error detected in input."
             });
+            // Include stack trace data if parsed
+            if let Some(ref trace) = parsed_stack_trace {
+                payload["stack_trace"] = serde_json::to_value(StackTraceJson::from(trace))?;
+            }
             if cli.stats {
                 payload["stats"] = serde_json::to_value(&stats)?;
             }
@@ -1142,6 +2526,10 @@ fn main() -> Result<()> {
                 "no_error": true,
                 "message": "Could not analyze input. It may not be an error message."
             });
+            // Include stack trace data if parsed
+            if let Some(ref trace) = parsed_stack_trace {
+                payload["stack_trace"] = serde_json::to_value(StackTraceJson::from(trace))?;
+            }
             if cli.stats {
                 payload["stats"] = serde_json::to_value(&stats)?;
             }
@@ -1174,11 +2562,28 @@ fn main() -> Result<()> {
             "explanation": result.explanation,
             "suggestion": result.suggestion
         });
+        // Include stack trace data if parsed
+        if let Some(ref trace) = parsed_stack_trace {
+            payload["stack_trace"] = serde_json::to_value(StackTraceJson::from(trace))?;
+        }
         if cli.stats {
             payload["stats"] = serde_json::to_value(&stats)?;
         }
         println!("{}", serde_json::to_string_pretty(&payload)?);
     } else {
+        // Print file:line highlighting if we have a root cause frame
+        if let Some(ref trace) = parsed_stack_trace {
+            if let Some(root_frame) = trace.root_cause_frame() {
+                if let Some(ref file) = root_frame.file {
+                    println!();
+                    println!("{} {}", "▸".cyan(), "Location".cyan().bold());
+                    println!(
+                        "  {}",
+                        format_file_line(file, root_frame.line, root_frame.column)
+                    );
+                }
+            }
+        }
         print_colored(&result);
         if cli.stats {
             print_stats(&stats);
@@ -1186,632 +2591,4 @@ fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_build_prompt_substitutes_error() {
-        let prompt = build_prompt("segmentation fault", ModelFamily::Qwen);
-        assert!(prompt.contains("segmentation fault"));
-        assert!(prompt.contains("<|im_start|>"));
-        assert!(prompt.contains("SUMMARY:"));
-    }
-
-    #[test]
-    fn test_build_prompt_trims_whitespace() {
-        let prompt = build_prompt("  error with spaces  ", ModelFamily::Qwen);
-        assert!(prompt.contains("error with spaces"));
-        assert!(!prompt.contains("  error")); // leading spaces trimmed
-    }
-
-    #[test]
-    fn test_build_prompt_gemma_template() {
-        let prompt = build_prompt("test error", ModelFamily::Gemma);
-        assert!(prompt.contains("test error"));
-        assert!(prompt.contains("<start_of_turn>"));
-        assert!(prompt.contains("<end_of_turn>"));
-        assert!(!prompt.contains("<|im_start|>")); // No ChatML tokens
-    }
-
-    #[test]
-    fn test_detect_model_family_qwen() {
-        let path = PathBuf::from("/path/to/qwen2.5-coder-0.5b-instruct-q8_0.gguf");
-        assert_eq!(detect_model_family(&path), ModelFamily::Qwen);
-    }
-
-    #[test]
-    fn test_detect_model_family_gemma() {
-        let path = PathBuf::from("/path/to/gemma-3-270m-it-Q8_0.gguf");
-        assert_eq!(detect_model_family(&path), ModelFamily::Gemma);
-    }
-
-    #[test]
-    fn test_detect_model_family_smollm() {
-        let path = PathBuf::from("/path/to/SmolLM2-135M-Instruct-Q8_0.gguf");
-        assert_eq!(detect_model_family(&path), ModelFamily::Smollm);
-    }
-
-    #[test]
-    fn test_detect_model_family_default() {
-        let path = PathBuf::from("/path/to/random-model.gguf");
-        assert_eq!(detect_model_family(&path), ModelFamily::Qwen); // Default
-    }
-
-    #[test]
-    fn test_model_family_display() {
-        assert_eq!(format!("{}", ModelFamily::Qwen), "qwen (ChatML)");
-        assert_eq!(format!("{}", ModelFamily::Gemma), "gemma (Gemma format)");
-        assert_eq!(format!("{}", ModelFamily::Smollm), "smollm (ChatML)");
-    }
-
-    #[test]
-    fn test_parse_response_standard_format() {
-        let response = "Memory access violation at invalid address.\n\
-            EXPLANATION: The program tried to access memory it doesn't own.\n\
-            SUGGESTION: Check for null pointers and array bounds.";
-
-        let result = parse_response("segfault", response);
-
-        assert_eq!(result.error, "segfault");
-        assert!(result.summary.contains("Memory access violation"));
-        assert!(result.explanation.contains("memory it doesn't own"));
-        assert!(result.suggestion.contains("null pointers"));
-    }
-
-    #[test]
-    fn test_parse_response_with_headers() {
-        let response = "SUMMARY: A null pointer was dereferenced.\n\
-            EXPLANATION: You tried to use a pointer that points to nothing.\n\
-            SUGGESTION: Initialize your pointers before use.";
-
-        let result = parse_response("null pointer", response);
-
-        assert_eq!(result.summary, "A null pointer was dereferenced.");
-        assert!(result
-            .explanation
-            .contains("pointer that points to nothing"));
-        assert!(result.suggestion.contains("Initialize"));
-    }
-
-    #[test]
-    fn test_parse_response_inline_content() {
-        let response = "SUMMARY: Stack overflow occurred.\n\
-            EXPLANATION: Infinite recursion exhausted the stack.\n\
-            SUGGESTION: Add a base case to your recursion.";
-
-        let result = parse_response("stack overflow", response);
-
-        assert_eq!(result.summary, "Stack overflow occurred.");
-        assert!(result.explanation.contains("recursion"));
-        assert!(result.suggestion.contains("base case"));
-    }
-
-    #[test]
-    fn test_parse_response_multiline_sections() {
-        let response = "SUMMARY: Type mismatch error.\n\
-            EXPLANATION: The function expected an integer\n\
-            but received a string instead.\n\
-            SUGGESTION: Convert the string to int using parse().";
-
-        let result = parse_response("type error", response);
-
-        assert!(result.explanation.contains("expected an integer"));
-        assert!(result.explanation.contains("string instead"));
-    }
-
-    #[test]
-    fn test_parse_response_fallback_unstructured() {
-        let response = "This error means something went wrong with your code.";
-
-        let result = parse_response("generic error", response);
-
-        // Unstructured text without headers goes to summary (default section)
-        assert!(!result.summary.is_empty());
-        assert!(result.summary.contains("something went wrong"));
-    }
-
-    #[test]
-    fn test_parse_response_empty_sections() {
-        let response = "SUMMARY:\nEXPLANATION: Something happened.\nSUGGESTION:";
-
-        let result = parse_response("error", response);
-
-        assert!(result.summary.is_empty());
-        assert!(!result.explanation.is_empty());
-        assert!(result.suggestion.is_empty());
-    }
-
-    #[test]
-    fn test_error_explanation_serializes_to_json() {
-        let explanation = ErrorExplanation {
-            error: "test error".to_string(),
-            summary: "test summary".to_string(),
-            explanation: "test explanation".to_string(),
-            suggestion: "test suggestion".to_string(),
-        };
-
-        let json = serde_json::to_string(&explanation).unwrap();
-
-        assert!(json.contains("\"error\":\"test error\""));
-        assert!(json.contains("\"summary\":\"test summary\""));
-    }
-
-    #[test]
-    fn test_cli_parses_error_args() {
-        let cli = Cli::parse_from(["why", "segmentation", "fault"]);
-        assert_eq!(cli.error, vec!["segmentation", "fault"]);
-        assert!(!cli.json);
-    }
-
-    #[test]
-    fn test_cli_parses_json_flag() {
-        let cli = Cli::parse_from(["why", "--json", "error"]);
-        assert!(cli.json);
-    }
-
-    #[test]
-    fn test_cli_parses_short_json_flag() {
-        let cli = Cli::parse_from(["why", "-j", "error"]);
-        assert!(cli.json);
-    }
-
-    #[test]
-    fn test_cli_parses_stats_flag() {
-        let cli = Cli::parse_from(["why", "--stats", "error"]);
-        assert!(cli.stats);
-    }
-
-    #[test]
-    fn test_cli_parses_completions() {
-        let cli = Cli::parse_from(["why", "--completions", "bash"]);
-        assert_eq!(cli.completions, Some(Shell::Bash));
-    }
-
-    // Long input tests
-    #[test]
-    fn test_build_prompt_long_input() {
-        let long_error = "error: ".to_string() + &"x".repeat(5000);
-        let prompt = build_prompt(&long_error, ModelFamily::Qwen);
-        assert!(prompt.contains(&"x".repeat(100))); // Contains part of the long string
-        assert!(prompt.len() > 5000);
-    }
-
-    #[test]
-    fn test_parse_response_long_sections() {
-        let long_explanation = "word ".repeat(500);
-        let response = format!(
-            "SUMMARY: Short summary.\nEXPLANATION: {}\nSUGGESTION: Fix it.",
-            long_explanation
-        );
-
-        let result = parse_response("error", &response);
-
-        assert_eq!(result.summary, "Short summary.");
-        assert!(result.explanation.len() > 2000);
-        assert!(result.explanation.contains("word word word"));
-    }
-
-    #[test]
-    fn test_cli_long_error_args() {
-        let long_msg = "a]".repeat(1000);
-        let cli = Cli::parse_from(["why", &long_msg]);
-        assert_eq!(cli.error.len(), 1);
-        assert_eq!(cli.error[0].len(), 2000);
-    }
-
-    // Multiline input tests
-    #[test]
-    fn test_build_prompt_multiline_input() {
-        let multiline_error = "error[E0382]: borrow of moved value\n\
-            --> src/main.rs:10:5\n\
-            |\n\
-            10 |     println!(\"{}\", x);\n\
-            |                    ^ value borrowed here after move";
-
-        let prompt = build_prompt(multiline_error, ModelFamily::Qwen);
-
-        assert!(prompt.contains("error[E0382]"));
-        assert!(prompt.contains("src/main.rs:10:5"));
-        assert!(prompt.contains("value borrowed here after move"));
-    }
-
-    #[test]
-    fn test_build_prompt_preserves_newlines() {
-        let input = "line1\nline2\nline3";
-        let prompt = build_prompt(input, ModelFamily::Qwen);
-
-        // The prompt should contain all lines
-        assert!(prompt.contains("line1"));
-        assert!(prompt.contains("line2"));
-        assert!(prompt.contains("line3"));
-    }
-
-    #[test]
-    fn test_parse_response_multiline_explanation() {
-        let response = "SUMMARY: Compilation failed.\n\
-            EXPLANATION: The compiler found multiple errors:\n\
-            - Type mismatch on line 10\n\
-            - Missing semicolon on line 15\n\
-            - Undefined variable on line 20\n\
-            SUGGESTION: Fix each error in order.";
-
-        let result = parse_response("compile error", &response);
-
-        assert_eq!(result.summary, "Compilation failed.");
-        assert!(result.explanation.contains("Type mismatch"));
-        assert!(result.explanation.contains("Missing semicolon"));
-        assert!(result.explanation.contains("Undefined variable"));
-    }
-
-    #[test]
-    fn test_cli_multiline_quoted_arg() {
-        // When passed as a single quoted argument
-        let cli = Cli::parse_from(["why", "line1\nline2\nline3"]);
-        assert_eq!(cli.error.len(), 1);
-        assert!(cli.error[0].contains('\n'));
-        assert!(cli.error[0].contains("line1"));
-        assert!(cli.error[0].contains("line3"));
-    }
-
-    #[test]
-    fn test_parse_response_stack_trace() {
-        let response = "SUMMARY: Null pointer exception in Java.\n\
-            EXPLANATION: The stack trace shows:\n\
-            at com.example.Main.process(Main.java:42)\n\
-            at com.example.Main.main(Main.java:10)\n\
-            The null reference originated in the process method.\n\
-            SUGGESTION: Add null checks before calling methods on objects.";
-
-        let result = parse_response("java.lang.NullPointerException", &response);
-
-        assert!(result.explanation.contains("Main.java:42"));
-        assert!(result.explanation.contains("null reference"));
-    }
-
-    // Combined long + multiline tests
-    #[test]
-    fn test_build_prompt_long_multiline() {
-        let long_line = "x".repeat(500);
-        let multiline = format!("{}\n{}\n{}", long_line, long_line, long_line);
-        let prompt = build_prompt(&multiline, ModelFamily::Qwen);
-
-        assert!(prompt.len() > 1500);
-        assert!(prompt.contains(&"x".repeat(100)));
-    }
-
-    #[test]
-    fn test_parse_response_real_rust_error() {
-        let response = "SUMMARY: Ownership violation - value used after move.\n\
-            EXPLANATION: In Rust, when you assign a value to another variable or pass it to a function, \
-            ownership is transferred (moved). The original variable can no longer be used. \
-            This error occurs at src/main.rs:10:5 where you tried to use 'x' after it was moved.\n\
-            SUGGESTION: Consider using .clone() to create a copy, or borrow the value with & instead of moving it.";
-
-        let result = parse_response("error[E0382]: borrow of moved value", &response);
-
-        assert!(result.summary.contains("Ownership violation"));
-        assert!(result.explanation.contains("ownership is transferred"));
-        assert!(result.suggestion.contains("clone()"));
-    }
-
-    // Echo detection tests for long/multiline
-    #[test]
-    fn test_is_echo_response_long_input() {
-        let long_input = "error: ".to_string() + &"details ".repeat(100);
-        let echo_response = long_input.clone();
-
-        assert!(is_echo_response(&long_input, &echo_response));
-    }
-
-    #[test]
-    fn test_is_echo_response_multiline_input() {
-        let multiline_input = "error on line 1\nerror on line 2\nerror on line 3";
-        let echo_response = multiline_input.to_string();
-
-        assert!(is_echo_response(multiline_input, &echo_response));
-    }
-
-    #[test]
-    fn test_is_echo_response_structured_long() {
-        let long_input = "x".repeat(1000);
-        let structured_response = format!(
-            "SUMMARY: Error detected.\nEXPLANATION: The input {} indicates a problem.\nSUGGESTION: Fix it.",
-            &long_input[..50]
-        );
-
-        assert!(!is_echo_response(&long_input, &structured_response));
-    }
-
-    // Edge cases
-    #[test]
-    fn test_build_prompt_empty_lines_in_multiline() {
-        let input = "error\n\n\nmore info\n\n";
-        let prompt = build_prompt(input, ModelFamily::Qwen);
-
-        assert!(prompt.contains("error"));
-        assert!(prompt.contains("more info"));
-    }
-
-    #[test]
-    fn test_parse_response_many_newlines() {
-        let response = "SUMMARY: Test.\n\n\n\nEXPLANATION: Details.\n\n\nSUGGESTION: Fix.";
-        let result = parse_response("error", &response);
-
-        assert_eq!(result.summary, "Test.");
-        assert_eq!(result.explanation, "Details.");
-        assert_eq!(result.suggestion, "Fix.");
-    }
-
-    #[test]
-    fn test_generation_limit_allows_long_prompts() {
-        let start_n = 2000;
-        let n_cur = 2000;
-        let max_gen_tokens = 512;
-
-        assert!(can_generate_more(start_n, n_cur, max_gen_tokens));
-        assert!(!can_generate_more(
-            start_n,
-            start_n + max_gen_tokens,
-            max_gen_tokens
-        ));
-    }
-
-    #[test]
-    fn test_cli_multiple_long_args() {
-        let arg1 = "a".repeat(500);
-        let arg2 = "b".repeat(500);
-        let cli = Cli::parse_from(["why", &arg1, &arg2]);
-
-        assert_eq!(cli.error.len(), 2);
-        assert_eq!(cli.error[0].len(), 500);
-        assert_eq!(cli.error[1].len(), 500);
-    }
-
-    #[test]
-    fn test_cli_parses_debug_flag() {
-        let cli = Cli::parse_from(["why", "--debug", "error"]);
-        assert!(cli.debug);
-    }
-
-    #[test]
-    fn test_cli_parses_short_debug_flag() {
-        let cli = Cli::parse_from(["why", "-d", "error"]);
-        assert!(cli.debug);
-    }
-
-    #[test]
-    fn test_cli_debug_and_json_together() {
-        let cli = Cli::parse_from(["why", "-d", "-j", "error"]);
-        assert!(cli.debug);
-        assert!(cli.json);
-    }
-
-    #[test]
-    fn test_cli_parses_model_flag() {
-        let cli = Cli::parse_from(["why", "--model", "/path/to/model.gguf", "error"]);
-        assert_eq!(cli.model, Some(PathBuf::from("/path/to/model.gguf")));
-    }
-
-    #[test]
-    fn test_cli_parses_short_model_flag() {
-        let cli = Cli::parse_from(["why", "-m", "/path/to/model.gguf", "error"]);
-        assert_eq!(cli.model, Some(PathBuf::from("/path/to/model.gguf")));
-    }
-
-    #[test]
-    fn test_cli_parses_template_flag() {
-        let cli = Cli::parse_from(["why", "--template", "gemma", "error"]);
-        assert_eq!(cli.template, Some(ModelFamily::Gemma));
-    }
-
-    #[test]
-    fn test_cli_parses_short_template_flag() {
-        let cli = Cli::parse_from(["why", "-t", "qwen", "error"]);
-        assert_eq!(cli.template, Some(ModelFamily::Qwen));
-    }
-
-    #[test]
-    fn test_cli_parses_template_smollm() {
-        let cli = Cli::parse_from(["why", "--template", "smollm", "error"]);
-        assert_eq!(cli.template, Some(ModelFamily::Smollm));
-    }
-
-    #[test]
-    fn test_cli_parses_list_models_flag() {
-        let cli = Cli::parse_from(["why", "--list-models"]);
-        assert!(cli.list_models);
-    }
-
-    #[test]
-    fn test_cli_model_and_template_together() {
-        let cli = Cli::parse_from([
-            "why",
-            "--model",
-            "/path/to/gemma.gguf",
-            "--template",
-            "gemma",
-            "error",
-        ]);
-        assert_eq!(cli.model, Some(PathBuf::from("/path/to/gemma.gguf")));
-        assert_eq!(cli.template, Some(ModelFamily::Gemma));
-    }
-
-    // Tests for extract_section_label guardrail
-    #[test]
-    fn test_extract_section_label_uppercase() {
-        let (section, rest) = extract_section_label("SUMMARY: This is a summary").unwrap();
-        assert_eq!(section, "summary");
-        assert_eq!(rest, "This is a summary");
-    }
-
-    #[test]
-    fn test_extract_section_label_lowercase() {
-        let (section, rest) = extract_section_label("summary: This is a summary").unwrap();
-        assert_eq!(section, "summary");
-        assert_eq!(rest, "This is a summary");
-    }
-
-    #[test]
-    fn test_extract_section_label_mixed_case() {
-        let (section, rest) = extract_section_label("Summary: This is a summary").unwrap();
-        assert_eq!(section, "summary");
-        assert_eq!(rest, "This is a summary");
-    }
-
-    #[test]
-    fn test_extract_section_label_markdown_bold() {
-        let (section, rest) = extract_section_label("**Summary:** This is a summary").unwrap();
-        assert_eq!(section, "summary");
-        assert_eq!(rest, "This is a summary");
-    }
-
-    #[test]
-    fn test_extract_section_label_markdown_bold_uppercase() {
-        let (section, rest) = extract_section_label("**SUMMARY:** This is a summary").unwrap();
-        assert_eq!(section, "summary");
-        assert_eq!(rest, "This is a summary");
-    }
-
-    #[test]
-    fn test_extract_section_label_explanation_markdown() {
-        let (section, rest) = extract_section_label("**Explanation:** The error occurs").unwrap();
-        assert_eq!(section, "explanation");
-        assert_eq!(rest, "The error occurs");
-    }
-
-    #[test]
-    fn test_extract_section_label_suggestion_markdown() {
-        let (section, rest) = extract_section_label("**Suggestion:** Fix the code").unwrap();
-        assert_eq!(section, "suggestion");
-        assert_eq!(rest, "Fix the code");
-    }
-
-    #[test]
-    fn test_extract_section_label_no_content() {
-        let (section, rest) = extract_section_label("SUMMARY:").unwrap();
-        assert_eq!(section, "summary");
-        assert_eq!(rest, "");
-    }
-
-    #[test]
-    fn test_extract_section_label_just_label() {
-        let (section, rest) = extract_section_label("EXPLANATION").unwrap();
-        assert_eq!(section, "explanation");
-        assert_eq!(rest, "");
-    }
-
-    #[test]
-    fn test_extract_section_label_not_a_section() {
-        assert!(extract_section_label("This is just regular text").is_none());
-        assert!(extract_section_label("summarizing the results").is_none());
-        assert!(extract_section_label("explanatory note").is_none());
-    }
-
-    #[test]
-    fn test_parse_response_markdown_format() {
-        let response = "**Summary:** The error is a TypeError.\n\
-            **Explanation:** You tried to access a property on undefined.\n\
-            **Suggestion:** Check if the object exists first.";
-
-        let result = parse_response("TypeError", response);
-
-        assert_eq!(result.summary, "The error is a TypeError.");
-        assert!(result.explanation.contains("access a property"));
-        assert!(result.suggestion.contains("Check if the object"));
-    }
-
-    #[test]
-    fn test_parse_response_mixed_formats() {
-        // Model might mix formats within a response
-        let response = "**Summary:** Mixed format test.\n\
-            EXPLANATION: Using uppercase here.\n\
-            **Suggestion:** And back to markdown.";
-
-        let result = parse_response("error", response);
-
-        assert_eq!(result.summary, "Mixed format test.");
-        assert!(result.explanation.contains("uppercase"));
-        assert!(result.suggestion.contains("back to markdown"));
-    }
-
-    #[test]
-    fn test_parse_response_case_insensitive() {
-        let response = "summary: lowercase labels work.\n\
-            explanation: this should parse correctly.\n\
-            suggestion: and so should this.";
-
-        let result = parse_response("error", response);
-
-        assert!(result.summary.contains("lowercase labels"));
-        assert!(result.explanation.contains("parse correctly"));
-        assert!(result.suggestion.contains("so should this"));
-    }
-
-    // Degenerate response detection tests
-    #[test]
-    fn test_is_degenerate_response_long_char_run() {
-        // Long run of 'A' characters
-        let response = "The hash is ".to_string() + &"A".repeat(50);
-        assert!(is_degenerate_response(&response));
-    }
-
-    #[test]
-    fn test_is_degenerate_response_repeating_pattern() {
-        // Repeating "@ " pattern
-        let response = "@ ".repeat(20);
-        assert!(is_degenerate_response(&response));
-    }
-
-    #[test]
-    fn test_is_degenerate_response_repeating_words() {
-        // Same word repeated many times
-        let response = "sha256 ".repeat(10);
-        assert!(is_degenerate_response(&response));
-    }
-
-    #[test]
-    fn test_is_degenerate_response_release_req_pattern() {
-        // The actual pattern from user's report
-        let response = "RELEASE: REQ: ".repeat(20);
-        assert!(is_degenerate_response(&response));
-    }
-
-    #[test]
-    fn test_is_degenerate_response_high_char_dominance() {
-        // Single character makes up > 50% of response
-        let response = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx abc";
-        assert!(is_degenerate_response(response));
-    }
-
-    #[test]
-    fn test_is_degenerate_response_normal_response() {
-        // A normal, well-formed response should not be flagged
-        let response = "SUMMARY: This is a segmentation fault error.\n\
-            EXPLANATION: The program tried to access memory it doesn't have permission to access.\n\
-            SUGGESTION: Check for null pointers and array bounds.";
-        assert!(!is_degenerate_response(response));
-    }
-
-    #[test]
-    fn test_is_degenerate_response_short_response() {
-        // Very short responses aren't degenerate, just short
-        assert!(!is_degenerate_response("OK"));
-        assert!(!is_degenerate_response("Error found"));
-    }
-
-    #[test]
-    fn test_is_degenerate_response_empty() {
-        assert!(!is_degenerate_response(""));
-        assert!(!is_degenerate_response("   "));
-    }
-
-    #[test]
-    fn test_is_degenerate_response_code_block() {
-        // Code with repetitive structure shouldn't trigger false positives
-        let response = "SUMMARY: Fix the loop.\nEXPLANATION:\n```\nfor i in range(10):\n    print(i)\n```\nSUGGESTION: Use enumerate.";
-        assert!(!is_degenerate_response(response));
-    }
 }

@@ -4,9 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, crane }:
     {
       # Overlay for easy integration into NixOS/home-manager configs
       overlays.default = final: prev: {
@@ -28,6 +29,21 @@
 
         # Git revision for version string (works with dirty trees too)
         gitRev = self.shortRev or self.dirtyShortRev or "unknown";
+
+        # ============================================================
+        # Crane setup for incremental Rust builds
+        # ============================================================
+        craneLib = crane.mkLib pkgs;
+
+        # Source filtering - include Rust files plus prompt templates
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type:
+            # Include prompt templates (required by include_str!)
+            (builtins.match ".*\.txt$" path != null) ||
+            # Include standard Rust/Cargo files
+            (craneLib.filterCargoSources path type);
+        };
 
         # ============================================================
         # Model Definitions
@@ -92,17 +108,11 @@
         ];
 
         # ============================================================
-        # Build the why CLI (no embedded model)
+        # Common build arguments for Crane
         # ============================================================
-        why-cli = pkgs.rustPlatform.buildRustPackage {
-          pname = "why";
-          inherit version;
-
-          src = pkgs.lib.cleanSource ./.;
-
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-          };
+        commonArgs = {
+          inherit src;
+          strictDeps = true;
 
           nativeBuildInputs = with pkgs; [
             pkg-config
@@ -119,9 +129,32 @@
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           WHY_GIT_SHA = gitRev;
 
-          buildFeatures = gpuFeatures;
+          cargoExtraArgs = "--features ${gpuFeaturesStr}";
+        };
 
+        # ============================================================
+        # Build dependencies only (cached separately from source)
+        # This is the key to Crane's speed - deps are rebuilt only
+        # when Cargo.lock changes, not when source changes
+        # ============================================================
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+        # ============================================================
+        # Build the why CLI (no embedded model)
+        # ============================================================
+        why-cli = craneLib.buildPackage (commonArgs // {
+          inherit cargoArtifacts;
+
+          # Don't run tests during build (we have a separate check)
           doCheck = false;
+
+          # Clean llama-cpp-sys-2 build artifacts to avoid path issues
+          # CMake generates files with hardcoded absolute paths that reference
+          # the deps-only build directory, which doesn't exist in the main build
+          preBuild = ''
+            rm -rf target/release/build/llama-cpp-sys-2-* 2>/dev/null || true
+            rm -rf target/debug/build/llama-cpp-sys-2-* 2>/dev/null || true
+          '';
 
           meta = with pkgs.lib; {
             description = "Quick error explanation CLI using local LLM";
@@ -131,7 +164,7 @@
             platforms = platforms.unix;
             mainProgram = "why";
           };
-        };
+        });
 
         # ============================================================
         # Function to create embedded binary with a specific model
@@ -322,29 +355,55 @@
           };
         };
 
-        # Development shell
-        devShells.default = pkgs.mkShell {
-          name = "why-dev";
+        # ============================================================
+        # Checks - run tests, clippy, formatting
+        # ============================================================
+        checks = {
+          # Build the CLI (includes compile-time checks)
+          why-cli = why-cli;
 
-          nativeBuildInputs = with pkgs; [
+          # Run clippy
+          why-clippy = craneLib.cargoClippy (commonArgs // {
+            inherit cargoArtifacts;
+            cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+            # Clean llama-cpp-sys-2 build artifacts
+            preBuild = ''
+              rm -rf target/release/build/llama-cpp-sys-2-* 2>/dev/null || true
+              rm -rf target/debug/build/llama-cpp-sys-2-* 2>/dev/null || true
+            '';
+          });
+
+          # Check formatting
+          why-fmt = craneLib.cargoFmt {
+            inherit src;
+          };
+
+          # Run tests
+          why-test = craneLib.cargoTest (commonArgs // {
+            inherit cargoArtifacts;
+            # Clean llama-cpp-sys-2 build artifacts
+            preBuild = ''
+              rm -rf target/release/build/llama-cpp-sys-2-* 2>/dev/null || true
+              rm -rf target/debug/build/llama-cpp-sys-2-* 2>/dev/null || true
+            '';
+          });
+        };
+
+        # Development shell
+        devShells.default = craneLib.devShell {
+          # Inherit checks to get build inputs
+          checks = self.checks.${system};
+
+          # Additional dev tools
+          packages = with pkgs; [
             # LLM inference
             llama-cpp
 
-            # Rust toolchain
-            rustc
-            cargo
+            # Rust toolchain (crane provides rustc, cargo, etc.)
             rustfmt
             clippy
             rust-analyzer
             cargo-tarpaulin
-
-            # Native deps for llama.cpp Rust bindings
-            pkg-config
-            openssl
-            cmake
-
-            # bindgen
-            rustPlatform.bindgenHook
 
             # Used by embed.sh for size calculations
             bc
@@ -357,26 +416,23 @@
             # Helper scripts
             buildScript
             fetchModelScript
-          ] ++ (if isDarwin then [
-            apple-sdk_15
-            darwin.cctools
-          ] else [
-            vulkan-headers
-            vulkan-loader
-            shaderc
-            glslang
-          ]);
+          ];
 
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
 
           shellHook = ''
-            echo "why development shell"
+            echo "why development shell (powered by Crane)"
             echo "GPU support: ${gpuFeaturesStr}"
             echo ""
             echo "Commands:"
             echo "  build              - Build and embed default model"
             echo "  fetch-model <name> - Download a model for experimentation"
             echo "  cargo build --features ${gpuFeaturesStr}"
+            echo ""
+            echo "Crane benefits:"
+            echo "  - Dependencies cached separately from source"
+            echo "  - Incremental rebuilds when only source changes"
+            echo "  - nix build is much faster on subsequent runs"
             echo ""
             echo "Quick experimentation:"
             echo "  1. fetch-model qwen3-0.6b"

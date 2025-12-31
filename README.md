@@ -43,6 +43,18 @@ why "segmentation fault"
 cargo build 2>&1 | why
 python script.py 2>&1 | why
 
+# Stream tokens as they generate (fancy)
+why --stream "null pointer exception"
+
+# Watch a log file for errors
+why --watch /var/log/app.log
+
+# Watch a command's output
+why --watch "npm run dev"
+
+# Capture and explain failures automatically
+why --capture -- cargo build
+
 # For the robots
 why --json "null pointer exception"
 
@@ -60,6 +72,11 @@ See the [examples/](examples/) directory for sample scripts in various languages
 - **Single binary** - Model embedded right in the executable. One file, zero dependencies.
 - **Offline** - Works on airplanes, in bunkers, or when your ISP decides to take a nap.
 - **Fast** - Local inference with Metal (macOS) or Vulkan (Linux). CPU-only works everywhere.
+- **Streaming** - Watch tokens appear in real-time with `--stream`. Feels like magic, but it's just inference.
+- **Watch mode** - Monitor log files or commands with `--watch`. Errors explained as they happen.
+- **Stack trace parsing** - Understands Python, Rust, JavaScript, Go, Java, and C++ stack traces.
+- **Shell integration** - Auto-explain failed commands. Your shell becomes slightly less hostile.
+- **Daemon mode** - Keep the model loaded with `why daemon start`. Sub-second responses.
 - **Structured output** - Clean, colored terminal output or JSON for scripting.
 - **Shell completions** - Tab completion for bash, zsh, fish, and friends.
 
@@ -139,6 +156,64 @@ why --completions zsh > ~/.zfunc/_why
 # Fish
 why --completions fish > ~/.config/fish/completions/why.fish
 ```
+
+## Shell Integration
+
+Make your shell explain failures automatically. No more copy-pasting error messages like a peasant.
+
+```bash
+# Generate hook for your shell
+why --hook bash >> ~/.bashrc
+why --hook zsh >> ~/.zshrc
+why --hook fish >> ~/.config/fish/config.fish
+
+# Or install directly
+why --hook-install bash
+
+# Now when commands fail, why explains them
+$ npm run build
+# (command fails)
+# why automatically explains what went wrong
+```
+
+Wrap commands to capture and explain failures:
+
+```bash
+# Run a command, explain if it fails
+why --capture -- cargo build
+
+# Prompt before explaining
+why --capture --confirm -- make test
+
+# Capture both stdout and stderr
+why --capture-all -- ./my-script.sh
+```
+
+## Daemon Mode
+
+Cold starts are for chumps. Keep the model loaded and get sub-second responses.
+
+```bash
+# Start the daemon
+why daemon start
+
+# Now queries are fast
+why "segmentation fault"  # Uses daemon if running
+
+# Check status
+why daemon status
+
+# Stop when you're done
+why daemon stop
+
+# Run in foreground (for debugging)
+why daemon start --foreground
+
+# Install as a system service
+why daemon install-service  # systemd on Linux, launchd on macOS
+```
+
+The daemon auto-shuts down after 30 minutes of inactivity. Configure with `--idle-timeout`.
 
 ## Nix Build Targets
 
