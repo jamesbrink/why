@@ -50,10 +50,7 @@ use why::output::{
     contains_error_patterns, format_file_line, interpret_exit_code, parse_response, print_colored,
     print_debug_section, print_frames, print_stats,
 };
-use why::stack_trace::{
-    extract_frame_context, Language, SourceContextConfig, StackFrame, StackTrace, StackTraceJson,
-    StackTraceParser, StackTraceParserRegistry,
-};
+use why::stack_trace::{StackTraceJson, StackTraceParserRegistry};
 use why::watch::{DetectedError, ErrorDeduplicator, ErrorDetector, WatchConfig};
 
 fn prompt_confirm(command: &str, exit_code: i32, stderr: &str) -> bool {
@@ -2006,27 +2003,26 @@ fn print_model_list() {
         "Description".blue().bold()
     );
     println!(
-        "  {:<20} {:<12} {}",
-        "───────────────────", "──────────", "─────────────────────────────────────"
+        "  {:<20} {:<12} ─────────────────────────────────────",
+        "───────────────────", "──────────"
     );
     println!(
-        "  {:<20} {:<12} {} {}",
+        "  {:<20} {:<12} Qwen2.5-Coder 0.5B - best quality {}",
         "why-qwen2_5-coder",
         "~530MB",
-        "Qwen2.5-Coder 0.5B - best quality",
         "(default)".dimmed()
     );
     println!(
-        "  {:<20} {:<12} {}",
-        "why-qwen3", "~639MB", "Qwen3 0.6B - newest Qwen"
+        "  {:<20} {:<12} Qwen3 0.6B - newest Qwen",
+        "why-qwen3", "~639MB"
     );
     println!(
-        "  {:<20} {:<12} {}",
-        "why-gemma3", "~292MB", "Gemma 3 270M - Google"
+        "  {:<20} {:<12} Gemma 3 270M - Google",
+        "why-gemma3", "~292MB"
     );
     println!(
-        "  {:<20} {:<12} {}",
-        "why-smollm2", "~145MB", "SmolLM2 135M - smallest/fastest"
+        "  {:<20} {:<12} SmolLM2 135M - smallest/fastest",
+        "why-smollm2", "~145MB"
     );
     println!();
     println!("{}", "Template Families".bold());
@@ -2036,17 +2032,9 @@ fn print_model_list() {
         "--template <family>".cyan()
     );
     println!();
-    println!(
-        "  {:<12} {}",
-        "qwen".green(),
-        "ChatML format (Qwen, SmolLM)"
-    );
-    println!(
-        "  {:<12} {}",
-        "gemma".green(),
-        "Gemma format (<start_of_turn>)"
-    );
-    println!("  {:<12} {}", "smollm".green(), "ChatML format (alias)");
+    println!("  {:<12} ChatML format (Qwen, SmolLM)", "qwen".green());
+    println!("  {:<12} Gemma format (<start_of_turn>)", "gemma".green());
+    println!("  {:<12} ChatML format (alias)", "smollm".green());
     println!();
 }
 
