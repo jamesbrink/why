@@ -206,9 +206,10 @@ impl ErrorDetector {
             self.aggregation_buffer.push(line.to_string());
             None
         } else if self.in_error {
-            if is_blank && self.blank_count >= 2 {
-                return self.flush_error();
-            } else if self.aggregation_buffer.len() >= self.max_lines {
+            // Flush if we hit two blank lines or reach max buffer size
+            if (is_blank && self.blank_count >= 2)
+                || self.aggregation_buffer.len() >= self.max_lines
+            {
                 return self.flush_error();
             } else if !is_blank {
                 self.aggregation_buffer.push(line.to_string());

@@ -769,8 +769,8 @@ pub struct GoStackTraceParser;
 
 impl GoStackTraceParser {
     fn parse_panic_line(line: &str) -> Option<String> {
-        if line.starts_with("panic:") {
-            return Some(line[6..].trim().to_string());
+        if let Some(rest) = line.strip_prefix("panic:") {
+            return Some(rest.trim().to_string());
         }
         None
     }
@@ -879,8 +879,8 @@ impl JavaStackTraceParser {
             }
         }
 
-        if trimmed.starts_with("Caused by:") {
-            let after = &trimmed[10..].trim();
+        if let Some(rest) = trimmed.strip_prefix("Caused by:") {
+            let after = rest.trim();
             return Self::parse_exception_type(after);
         }
 
@@ -1051,8 +1051,8 @@ impl CppStackTraceParser {
 
         let func_name = if let Some(in_pos) = func_part.find(" in ") {
             &func_part[in_pos + 4..]
-        } else if func_part.starts_with("in ") {
-            &func_part[3..]
+        } else if let Some(rest) = func_part.strip_prefix("in ") {
+            rest
         } else {
             func_part
         };

@@ -503,11 +503,11 @@ impl RustStackTraceParser {
             let after_at = &line[at_pos + 12..];
 
             // Check for old format with quoted message
-            if after_at.starts_with('\'') {
-                if let Some(end_quote) = after_at[1..].find('\'') {
-                    message = after_at[1..end_quote + 1].to_string();
+            if let Some(after_quote) = after_at.strip_prefix('\'') {
+                if let Some(end_quote) = after_quote.find('\'') {
+                    message = after_quote[..end_quote].to_string();
                     // Parse location after the message
-                    let after_msg = &after_at[end_quote + 2..];
+                    let after_msg = &after_quote[end_quote + 1..];
                     if let Some(loc) = after_msg.strip_prefix(", ") {
                         frame = Self::parse_location(loc);
                     }
@@ -594,8 +594,8 @@ impl RustStackTraceParser {
     /// Parse source location line: --> src/main.rs:10:5
     fn parse_source_location(line: &str) -> Option<StackFrame> {
         let trimmed = line.trim();
-        if trimmed.starts_with("-->") {
-            let loc = trimmed[3..].trim();
+        if let Some(rest) = trimmed.strip_prefix("-->") {
+            let loc = rest.trim();
             return Self::parse_location(loc);
         }
         None
@@ -705,8 +705,8 @@ impl JavaScriptStackTraceParser {
 
         for error_type in error_types {
             if let Some(rest) = line.strip_prefix(error_type) {
-                if rest.starts_with(':') {
-                    return Some((error_type.to_string(), rest[1..].trim().to_string()));
+                if let Some(after_colon) = rest.strip_prefix(':') {
+                    return Some((error_type.to_string(), after_colon.trim().to_string()));
                 } else if rest.is_empty()
                     || rest
                         .chars()
@@ -860,8 +860,8 @@ struct GoStackTraceParser;
 impl GoStackTraceParser {
     /// Parse panic line like "panic: runtime error: index out of range"
     fn parse_panic_line(line: &str) -> Option<String> {
-        if line.starts_with("panic:") {
-            return Some(line[6..].trim().to_string());
+        if let Some(rest) = line.strip_prefix("panic:") {
+            return Some(rest.trim().to_string());
         }
         None
     }
@@ -985,8 +985,8 @@ impl JavaStackTraceParser {
         }
 
         // Pattern: Caused by: ExceptionType: message
-        if trimmed.starts_with("Caused by:") {
-            let after = &trimmed[10..].trim();
+        if let Some(rest) = trimmed.strip_prefix("Caused by:") {
+            let after = rest.trim();
             return Self::parse_exception_type(after);
         }
 
@@ -1178,8 +1178,8 @@ impl CppStackTraceParser {
         // Extract function name
         let func_name = if let Some(in_pos) = func_part.find(" in ") {
             &func_part[in_pos + 4..]
-        } else if func_part.starts_with("in ") {
-            &func_part[3..]
+        } else if let Some(rest) = func_part.strip_prefix("in ") {
+            rest
         } else {
             func_part
         };
@@ -2135,18 +2135,10 @@ impl Config {
             return Self::default();
         }
 
-        match std::fs::read_to_string(&path) {
-            Ok(contents) => {
-                match toml::from_str(&contents) {
-                    Ok(config) => config,
-                    Err(_e) => {
-                        // Invalid config file, use defaults
-                        Self::default()
-                    }
-                }
-            }
-            Err(_) => Self::default(),
-        }
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|contents| toml::from_str(&contents).ok())
+            .unwrap_or_default()
     }
 
     /// Get the config file path (~/.config/why/config.toml)
@@ -3533,13 +3525,11 @@ fn run_command_watch(
     let stderr_reader = cmd_watcher.stderr_reader.take();
     let stderr_handle = stderr_reader.map(|reader| {
         thread::spawn(move || {
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    // Echo to terminal
-                    eprintln!("{}", line);
-                    // Send for processing
-                    let _ = stderr_tx.send(line);
-                }
+            for line in reader.lines().map_while(Result::ok) {
+                // Echo to terminal
+                eprintln!("{}", line);
+                // Send for processing
+                let _ = stderr_tx.send(line);
             }
         })
     });
@@ -3549,13 +3539,11 @@ fn run_command_watch(
     let stdout_reader = cmd_watcher.stdout_reader.take();
     let stdout_handle = stdout_reader.map(|reader| {
         thread::spawn(move || {
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    // Echo to terminal
-                    println!("{}", line);
-                    // Send for processing
-                    let _ = stdout_tx.send(line);
-                }
+            for line in reader.lines().map_while(Result::ok) {
+                // Echo to terminal
+                println!("{}", line);
+                // Send for processing
+                let _ = stdout_tx.send(line);
             }
         })
     });
@@ -6716,7 +6704,7 @@ mod tests {
             - Undefined variable on line 20\n\
             SUGGESTION: Fix each error in order.";
 
-        let result = parse_response("compile error", &response);
+        let result = parse_response("compile error", response);
 
         assert_eq!(result.summary, "Compilation failed.");
         assert!(result.explanation.contains("Type mismatch"));
@@ -6743,7 +6731,7 @@ mod tests {
             The null reference originated in the process method.\n\
             SUGGESTION: Add null checks before calling methods on objects.";
 
-        let result = parse_response("java.lang.NullPointerException", &response);
+        let result = parse_response("java.lang.NullPointerException", response);
 
         assert!(result.explanation.contains("Main.java:42"));
         assert!(result.explanation.contains("null reference"));
@@ -6768,7 +6756,7 @@ mod tests {
             This error occurs at src/main.rs:10:5 where you tried to use 'x' after it was moved.\n\
             SUGGESTION: Consider using .clone() to create a copy, or borrow the value with & instead of moving it.";
 
-        let result = parse_response("error[E0382]: borrow of moved value", &response);
+        let result = parse_response("error[E0382]: borrow of moved value", response);
 
         assert!(result.summary.contains("Ownership violation"));
         assert!(result.explanation.contains("ownership is transferred"));
@@ -6816,7 +6804,7 @@ mod tests {
     #[test]
     fn test_parse_response_many_newlines() {
         let response = "SUMMARY: Test.\n\n\n\nEXPLANATION: Details.\n\n\nSUGGESTION: Fix.";
-        let result = parse_response("error", &response);
+        let result = parse_response("error", response);
 
         assert_eq!(result.summary, "Test.");
         assert_eq!(result.explanation, "Details.");
@@ -7699,7 +7687,7 @@ stack backtrace:
 
         assert_eq!(trace.language, Language::JavaScript);
         assert_eq!(trace.error_type, "ReferenceError");
-        assert!(trace.frames.len() >= 1);
+        assert!(!trace.frames.is_empty());
     }
 
     // Go Parser Tests
@@ -7719,7 +7707,7 @@ main.main()
         assert_eq!(trace.language, Language::Go);
         assert_eq!(trace.error_type, "panic");
         assert!(trace.error_message.contains("index out of range"));
-        assert!(trace.frames.len() >= 1);
+        assert!(!trace.frames.is_empty());
     }
 
     // Java Parser Tests
@@ -7764,7 +7752,7 @@ Caused by: java.lang.IllegalArgumentException: Invalid input
         let trace = parser.parse(input).unwrap();
 
         assert_eq!(trace.language, Language::Cpp);
-        assert!(trace.frames.len() >= 1);
+        assert!(!trace.frames.is_empty());
         assert_eq!(trace.frames[0].line, Some(42));
     }
 

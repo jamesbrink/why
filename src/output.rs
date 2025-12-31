@@ -570,7 +570,7 @@ mod tests {
             - Undefined variable on line 20\n\
             SUGGESTION: Fix each error in order.";
 
-        let result = parse_response("compile error", &response);
+        let result = parse_response("compile error", response);
 
         assert_eq!(result.summary, "Compilation failed.");
         assert!(result.explanation.contains("Type mismatch"));
@@ -587,7 +587,7 @@ mod tests {
             The null reference originated in the process method.\n\
             SUGGESTION: Add null checks before calling methods on objects.";
 
-        let result = parse_response("java.lang.NullPointerException", &response);
+        let result = parse_response("java.lang.NullPointerException", response);
 
         assert!(result.explanation.contains("Main.java:42"));
         assert!(result.explanation.contains("null reference"));
@@ -601,7 +601,7 @@ mod tests {
             This error occurs at src/main.rs:10:5 where you tried to use 'x' after it was moved.\n\
             SUGGESTION: Consider using .clone() to create a copy, or borrow the value with & instead of moving it.";
 
-        let result = parse_response("error[E0382]: borrow of moved value", &response);
+        let result = parse_response("error[E0382]: borrow of moved value", response);
 
         assert!(result.summary.contains("Ownership violation"));
         assert!(result.explanation.contains("ownership is transferred"));
@@ -611,7 +611,7 @@ mod tests {
     #[test]
     fn test_parse_response_many_newlines() {
         let response = "SUMMARY: Test.\n\n\n\nEXPLANATION: Details.\n\n\nSUGGESTION: Fix.";
-        let result = parse_response("error", &response);
+        let result = parse_response("error", response);
 
         assert_eq!(result.summary, "Test.");
         assert_eq!(result.explanation, "Details.");
