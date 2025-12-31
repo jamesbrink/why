@@ -32,11 +32,17 @@ jobs:
 
       - name: Check flake
         run: nix flake check
-        # This runs all checks defined in flake.nix:
-        # - why-cli: build verification
-        # - why-clippy: clippy with -D warnings
-        # - why-fmt: format check
-        # - why-test: cargo test
+        timeout-minutes: 45
+
+      # These are redundant with flake check but seem to help with caching
+      - name: Run tests
+        run: nix develop --command cargo test
+
+      - name: Run clippy
+        run: nix develop --command cargo clippy -- -D warnings
+
+      - name: Check formatting
+        run: nix develop --command cargo fmt --check
 
   build:
     name: Build (${{ matrix.system }})
