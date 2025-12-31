@@ -69,7 +69,7 @@ impl DetectedError {
     }
 
     /// Compute a hash of error content, ignoring timestamps and line numbers
-    fn compute_hash(content: &str) -> u64 {
+    pub fn compute_hash(content: &str) -> u64 {
         let normalized = Self::normalize_for_hash(content);
         let mut hasher = DefaultHasher::new();
         normalized.hash(&mut hasher);
@@ -77,7 +77,7 @@ impl DetectedError {
     }
 
     /// Normalize content for hashing by stripping timestamps and line numbers
-    fn normalize_for_hash(content: &str) -> String {
+    pub fn normalize_for_hash(content: &str) -> String {
         let timestamp_re =
             Regex::new(r"(?:\d{4}-\d{2}-\d{2}|\d{2}:\d{2}:\d{2}|\[\d{10,}\]|\d{2}/\d{2}/\d{4})")
                 .unwrap();
