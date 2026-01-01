@@ -5,6 +5,154 @@ use clap_complete::Shell;
 use colored::Colorize;
 use std::path::{Path, PathBuf};
 
+/// State directory for hook settings
+fn get_state_dir() -> Option<PathBuf> {
+    // XDG_STATE_HOME or fallback to ~/.local/state
+    if let Ok(state_home) = std::env::var("XDG_STATE_HOME") {
+        Some(PathBuf::from(state_home).join("why"))
+    } else {
+        dirs::home_dir().map(|h| h.join(".local").join("state").join("why"))
+    }
+}
+
+/// Path to the hook enabled state file
+fn get_hook_state_path() -> Option<PathBuf> {
+    get_state_dir().map(|d| d.join("hook_enabled"))
+}
+
+/// Check if hooks are enabled
+pub fn is_hook_enabled() -> bool {
+    // Environment variable takes precedence
+    if std::env::var("WHY_HOOK_DISABLE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    // Check state file (default: enabled)
+    if let Some(state_path) = get_hook_state_path() {
+        if state_path.exists() {
+            return std::fs::read_to_string(state_path)
+                .map(|s| s.trim() != "0")
+                .unwrap_or(true);
+        }
+    }
+
+    // Default: enabled
+    true
+}
+
+/// Enable hook functionality
+pub fn enable_hook() -> Result<()> {
+    let state_dir =
+        get_state_dir().ok_or_else(|| anyhow::anyhow!("Could not determine state directory"))?;
+
+    std::fs::create_dir_all(&state_dir)
+        .with_context(|| format!("Failed to create state directory: {}", state_dir.display()))?;
+
+    let state_path = state_dir.join("hook_enabled");
+    std::fs::write(&state_path, "1\n")
+        .with_context(|| format!("Failed to write state file: {}", state_path.display()))?;
+
+    println!("{} Shell hook enabled", "✓".green());
+    println!();
+    println!("  The why shell hook will now explain command failures.");
+    println!(
+        "  To disable temporarily: {}",
+        "export WHY_HOOK_DISABLE=1".cyan()
+    );
+    println!();
+
+    Ok(())
+}
+
+/// Disable hook functionality
+pub fn disable_hook() -> Result<()> {
+    let state_dir =
+        get_state_dir().ok_or_else(|| anyhow::anyhow!("Could not determine state directory"))?;
+
+    std::fs::create_dir_all(&state_dir)
+        .with_context(|| format!("Failed to create state directory: {}", state_dir.display()))?;
+
+    let state_path = state_dir.join("hook_enabled");
+    std::fs::write(&state_path, "0\n")
+        .with_context(|| format!("Failed to write state file: {}", state_path.display()))?;
+
+    println!("{} Shell hook disabled", "✓".green());
+    println!();
+    println!("  The why shell hook will no longer explain command failures.");
+    println!("  To re-enable: {}", "why --enable".cyan());
+    println!();
+
+    Ok(())
+}
+
+/// Print hook status
+pub fn print_hook_status() {
+    let enabled = is_hook_enabled();
+    let env_disabled = std::env::var("WHY_HOOK_DISABLE")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+
+    println!("{}", "Shell Hook Status".bold());
+    println!();
+
+    // Enabled/disabled state
+    if enabled {
+        println!("  {} {}", "Status:".blue().bold(), "Enabled".green().bold());
+    } else {
+        println!("  {} {}", "Status:".blue().bold(), "Disabled".red().bold());
+    }
+
+    // Environment variable status
+    if env_disabled {
+        println!(
+            "  {} {} (WHY_HOOK_DISABLE=1)",
+            "Env override:".blue().bold(),
+            "Disabled".red()
+        );
+    }
+
+    println!();
+
+    // Installation status per shell
+    println!("{}", "Installation Status".bold());
+    println!();
+
+    for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+        if let Some(config_path) = get_shell_config_path(shell) {
+            let installed = hooks_already_installed(&config_path);
+            let status = if installed {
+                "Installed".green().to_string()
+            } else {
+                "Not installed".dimmed().to_string()
+            };
+            println!(
+                "  {:<12} {} ({})",
+                format!("{:?}:", shell),
+                status,
+                config_path.display()
+            );
+        }
+    }
+
+    println!();
+    println!("{}", "Commands".bold());
+    println!();
+    println!("  {} - Enable hook", "why --enable".cyan());
+    println!("  {} - Disable hook", "why --disable".cyan());
+    println!(
+        "  {} - Install hook for shell",
+        "why --hook-install <shell>".cyan()
+    );
+    println!(
+        "  {} - Uninstall hook from shell",
+        "why --hook-uninstall <shell>".cyan()
+    );
+    println!();
+}
+
 /// Marker comment for detecting existing hook installations
 pub const HOOK_MARKER_START: &str = "# >>> why shell hook >>>";
 pub const HOOK_MARKER_END: &str = "# <<< why shell hook <<<";

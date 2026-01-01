@@ -5,6 +5,7 @@ use clap_complete::Shell;
 use std::path::PathBuf;
 
 use crate::model::ModelFamily;
+use crate::providers::ProviderType;
 
 /// Quick error explanation using local LLM
 #[derive(Parser, Debug)]
@@ -45,6 +46,21 @@ pub struct Cli {
     /// List available model variants and exit
     #[arg(long)]
     pub list_models: bool,
+
+    // ========================================================================
+    // Provider Options
+    // ========================================================================
+    /// AI provider to use (local, anthropic, openai, openrouter)
+    #[arg(long, short = 'p', value_name = "PROVIDER")]
+    pub provider: Option<ProviderType>,
+
+    /// API key for external provider (overrides environment variable)
+    #[arg(long, value_name = "KEY")]
+    pub api_key: Option<String>,
+
+    /// List available providers and their status
+    #[arg(long)]
+    pub list_providers: bool,
 
     /// Generate shell completions
     #[arg(long, value_enum, value_name = "SHELL")]
@@ -110,6 +126,18 @@ pub struct Cli {
     /// Uninstall hook integration from shell config file
     #[arg(long, value_enum, value_name = "SHELL")]
     pub hook_uninstall: Option<Shell>,
+
+    /// Enable shell hook (explanations will be shown for command failures)
+    #[arg(long)]
+    pub enable: bool,
+
+    /// Disable shell hook (explanations will not be shown)
+    #[arg(long)]
+    pub disable: bool,
+
+    /// Show hook status (enabled/disabled, installation status per shell)
+    #[arg(long)]
+    pub status: bool,
 
     // ========================================================================
     // Watch Mode (Feature 2)

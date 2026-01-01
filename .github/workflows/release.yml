@@ -13,28 +13,63 @@ permissions:
 
 jobs:
   build:
-    name: Build (${{ matrix.system }})
+    name: Build (${{ matrix.artifact }})
     strategy:
       matrix:
         include:
+          # x86_64-linux
           - system: x86_64-linux
             runner: ubuntu-latest
+            package: default
             artifact: why-x86_64-linux
+          - system: x86_64-linux
+            runner: ubuntu-latest
+            package: cli
+            artifact: why-cli-x86_64-linux
+          # aarch64-linux (via QEMU)
+          - system: aarch64-linux
+            runner: ubuntu-latest
+            package: cli
+            artifact: why-cli-aarch64-linux
+          # aarch64-darwin
           - system: aarch64-darwin
             runner: macos-latest
+            package: default
             artifact: why-aarch64-darwin
+          - system: aarch64-darwin
+            runner: macos-latest
+            package: cli
+            artifact: why-cli-aarch64-darwin
+          # x86_64-darwin
           - system: x86_64-darwin
             runner: macos-15-intel
+            package: default
             artifact: why-x86_64-darwin
+          - system: x86_64-darwin
+            runner: macos-15-intel
+            package: cli
+            artifact: why-cli-x86_64-darwin
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
 
       - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            extra-platforms = aarch64-linux
+
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
+      - name: Install QEMU for aarch64
+        if: matrix.system == 'aarch64-linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support
+          sudo update-binfmts --enable qemu-aarch64
+
       - name: Build
-        run: nix build .#packages.${{ matrix.system }}.default
+        run: nix build .#packages.${{ matrix.system }}.${{ matrix.package }}
+        timeout-minutes: 90
 
       - name: Prepare artifact
         run: |
@@ -42,11 +77,18 @@ jobs:
           cp result/bin/why artifacts/${{ matrix.artifact }}
           chmod +x artifacts/${{ matrix.artifact }}
 
+      - name: Generate checksum
+        run: |
+          cd artifacts
+          sha256sum ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
+
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
-          path: artifacts/${{ matrix.artifact }}
+          path: |
+            artifacts/${{ matrix.artifact }}
+            artifacts/${{ matrix.artifact }}.sha256
 
   release:
     name: Create Release
@@ -70,5 +112,16 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/why-x86_64-linux
+            artifacts/why-x86_64-linux.sha256
+            artifacts/why-cli-x86_64-linux
+            artifacts/why-cli-x86_64-linux.sha256
+            artifacts/why-cli-aarch64-linux
+            artifacts/why-cli-aarch64-linux.sha256
             artifacts/why-aarch64-darwin
+            artifacts/why-aarch64-darwin.sha256
+            artifacts/why-cli-aarch64-darwin
+            artifacts/why-cli-aarch64-darwin.sha256
             artifacts/why-x86_64-darwin
+            artifacts/why-x86_64-darwin.sha256
+            artifacts/why-cli-x86_64-darwin
+            artifacts/why-cli-x86_64-darwin.sha256

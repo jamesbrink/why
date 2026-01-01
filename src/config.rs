@@ -1,9 +1,11 @@
 //! Configuration system for the `why` tool.
 
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;
+
+use crate::providers::ProviderType;
 
 /// Configuration for hook behavior
 #[derive(Debug, Deserialize, Clone)]
@@ -52,11 +54,94 @@ impl Default for IgnoreCommandsConfig {
     }
 }
 
+/// Provider-specific configuration
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(default)]
+pub struct ProviderConfig {
+    /// Default provider to use
+    pub default: ProviderType,
+    /// Anthropic-specific settings
+    pub anthropic: AnthropicConfig,
+    /// OpenAI-specific settings
+    pub openai: OpenAIConfig,
+    /// OpenRouter-specific settings
+    pub openrouter: OpenRouterConfig,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            default: ProviderType::Local,
+            anthropic: AnthropicConfig::default(),
+            openai: OpenAIConfig::default(),
+            openrouter: OpenRouterConfig::default(),
+        }
+    }
+}
+
+/// Anthropic provider configuration
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(default)]
+pub struct AnthropicConfig {
+    /// Model to use (e.g., "claude-sonnet-4-20250514")
+    pub model: String,
+    /// Maximum tokens to generate
+    pub max_tokens: u32,
+}
+
+impl Default for AnthropicConfig {
+    fn default() -> Self {
+        Self {
+            model: "claude-sonnet-4-20250514".to_string(),
+            max_tokens: 1024,
+        }
+    }
+}
+
+/// OpenAI provider configuration
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(default)]
+pub struct OpenAIConfig {
+    /// Model to use (e.g., "gpt-4o-mini")
+    pub model: String,
+    /// Maximum tokens to generate
+    pub max_tokens: u32,
+}
+
+impl Default for OpenAIConfig {
+    fn default() -> Self {
+        Self {
+            model: "gpt-4o-mini".to_string(),
+            max_tokens: 1024,
+        }
+    }
+}
+
+/// OpenRouter provider configuration
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(default)]
+pub struct OpenRouterConfig {
+    /// Model to use (e.g., "anthropic/claude-sonnet-4")
+    pub model: String,
+    /// Maximum tokens to generate
+    pub max_tokens: u32,
+}
+
+impl Default for OpenRouterConfig {
+    fn default() -> Self {
+        Self {
+            model: "anthropic/claude-sonnet-4".to_string(),
+            max_tokens: 1024,
+        }
+    }
+}
+
 /// Root configuration structure
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct Config {
     pub hook: HookConfig,
+    pub provider: ProviderConfig,
 }
 
 impl Config {
@@ -91,6 +176,48 @@ impl Config {
         // WHY_HOOK_AUTO=1 enables auto-explain
         if env::var("WHY_HOOK_AUTO").map(|v| v == "1").unwrap_or(false) {
             self.hook.auto_explain = true;
+        }
+
+        // WHY_PROVIDER overrides default provider
+        if let Ok(provider_str) = env::var("WHY_PROVIDER") {
+            if let Ok(provider) = provider_str.parse::<ProviderType>() {
+                self.provider.default = provider;
+            }
+        }
+
+        // WHY_MODEL overrides model for the configured provider
+        if let Ok(model) = env::var("WHY_MODEL") {
+            match self.provider.default {
+                ProviderType::Anthropic => self.provider.anthropic.model = model,
+                ProviderType::OpenAI => self.provider.openai.model = model,
+                ProviderType::OpenRouter => self.provider.openrouter.model = model,
+                ProviderType::Local => {} // Local model is set via --model flag
+            }
+        }
+    }
+
+    /// Get the configured provider type (with env override)
+    pub fn get_provider(&self) -> ProviderType {
+        self.provider.default
+    }
+
+    /// Get model for a specific provider
+    pub fn get_model(&self, provider: ProviderType) -> &str {
+        match provider {
+            ProviderType::Anthropic => &self.provider.anthropic.model,
+            ProviderType::OpenAI => &self.provider.openai.model,
+            ProviderType::OpenRouter => &self.provider.openrouter.model,
+            ProviderType::Local => "",
+        }
+    }
+
+    /// Get max tokens for a specific provider
+    pub fn get_max_tokens(&self, provider: ProviderType) -> u32 {
+        match provider {
+            ProviderType::Anthropic => self.provider.anthropic.max_tokens,
+            ProviderType::OpenAI => self.provider.openai.max_tokens,
+            ProviderType::OpenRouter => self.provider.openrouter.max_tokens,
+            ProviderType::Local => 512, // Default for local
         }
     }
 
@@ -144,9 +271,33 @@ patterns = [
     "^clear$",   # clear command
 ]
 
+[provider]
+# Default provider: local | anthropic | openai | openrouter
+default = "local"
+
+[provider.anthropic]
+# Model to use with Anthropic
+model = "claude-sonnet-4-20250514"
+max_tokens = 1024
+
+[provider.openai]
+# Model to use with OpenAI
+model = "gpt-4o-mini"
+max_tokens = 1024
+
+[provider.openrouter]
+# Model to use with OpenRouter (format: provider/model)
+model = "anthropic/claude-sonnet-4"
+max_tokens = 1024
+
 # Environment variable overrides:
-# WHY_HOOK_AUTO=1    - Force auto-explain (overrides config)
-# WHY_HOOK_DISABLE=1 - Temporarily disable hook explanations
+# WHY_HOOK_AUTO=1      - Force auto-explain (overrides config)
+# WHY_HOOK_DISABLE=1   - Temporarily disable hook explanations
+# WHY_PROVIDER=<name>  - Override default provider
+# WHY_MODEL=<model>    - Override model for current provider
+# ANTHROPIC_API_KEY    - API key for Anthropic
+# OPENAI_API_KEY       - API key for OpenAI
+# OPENROUTER_API_KEY   - API key for OpenRouter
 "#
     .to_string()
 }

@@ -37,6 +37,19 @@ crossterm = "0.29"
 ctrlc = "3.4"
 libc = "0.2"
 
+# HTTP client for external AI providers
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Streaming support
+tokio-stream = "0.1"
+eventsource-stream = "0.2"
+
+# Error handling
+thiserror = "2"
+
 [profile.release]
 opt-level = "z"
 lto = true

@@ -45,26 +45,65 @@ jobs:
         run: nix develop --command cargo fmt --check
 
   build:
-    name: Build (${{ matrix.system }})
+    name: Build (${{ matrix.system }} - ${{ matrix.variant }})
     needs: check
     strategy:
       matrix:
         include:
+          # x86_64-linux
           - system: x86_64-linux
             runner: ubuntu-latest
+            variant: embedded
+            package: default
+          - system: x86_64-linux
+            runner: ubuntu-latest
+            variant: cli
+            package: cli
+          # aarch64-linux (via QEMU emulation)
+          - system: aarch64-linux
+            runner: ubuntu-latest
+            variant: cli
+            package: cli
+          # aarch64-darwin
           - system: aarch64-darwin
             runner: macos-latest
+            variant: embedded
+            package: default
+          - system: aarch64-darwin
+            runner: macos-latest
+            variant: cli
+            package: cli
+          # x86_64-darwin
           - system: x86_64-darwin
             runner: macos-15-intel
+            variant: embedded
+            package: default
+          - system: x86_64-darwin
+            runner: macos-15-intel
+            variant: cli
+            package: cli
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
 
       - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            extra-platforms = aarch64-linux
+
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
+      - name: Install QEMU for aarch64
+        if: matrix.system == 'aarch64-linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support
+          sudo update-binfmts --enable qemu-aarch64
+
       - name: Build
-        run: nix build .#packages.${{ matrix.system }}.default
+        run: nix build .#packages.${{ matrix.system }}.${{ matrix.package }}
+        timeout-minutes: 60
 
       - name: Verify binary
+        if: matrix.system != 'aarch64-linux'
         run: ./result/bin/why --help

@@ -41,6 +41,8 @@
           filter = path: type:
             # Include prompt templates (required by include_str!)
             (builtins.match ".*\.txt$" path != null) ||
+            # Include all Rust source files (including new provider modules)
+            (builtins.match ".*\.rs$" path != null) ||
             # Include standard Rust/Cargo files
             (craneLib.filterCargoSources path type);
         };

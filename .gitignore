@@ -34,3 +34,4 @@ why-embedded
 
 # Claude local settings (user-specific)
 .claude/settings.local.json
+.claude/ralph-loop.local.md

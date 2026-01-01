@@ -8,7 +8,7 @@
 
 Simple CLI to explain errors using an embedded LLM, so you don't lose your shit.
 
-No API keys. No internet. No patience required.
+Works offline with an embedded model, or connect to cloud providers (Anthropic, OpenAI, OpenRouter) when you want more power.
 
 <p align="center">
   <img src="why.gif" alt="why demo">
@@ -63,6 +63,10 @@ why --model /path/to/model.gguf "error message"
 
 # Override template for non-standard models
 why --template gemma --model /path/to/gemma.gguf "error"
+
+# Use cloud providers (see External Providers section)
+why --provider anthropic "segmentation fault"
+why --provider openai "null pointer exception"
 ```
 
 See the [examples/](examples/) directory for sample scripts in various languages that produce common errors.
@@ -71,6 +75,7 @@ See the [examples/](examples/) directory for sample scripts in various languages
 
 - **Single binary** - Model embedded right in the executable. One file, zero dependencies.
 - **Offline** - Works on airplanes, in bunkers, or when your ISP decides to take a nap.
+- **Cloud providers** - Connect to Anthropic, OpenAI, or OpenRouter for more powerful explanations.
 - **Fast** - Local inference with Metal (macOS) or Vulkan (Linux). CPU-only works everywhere.
 - **Streaming** - Watch tokens appear in real-time with `--stream`. Feels like magic, but it's just inference.
 - **Watch mode** - Monitor log files or commands with `--watch`. Errors explained as they happen.
@@ -104,15 +109,31 @@ WHY_VERSION=v0.1.0 curl -sSfL https://raw.githubusercontent.com/jamesbrink/why/m
 
 Download the binary for your platform from [Releases](https://github.com/jamesbrink/why/releases):
 
+**Embedded (with model, ~680MB):**
 - `why-x86_64-linux` - Linux (x86_64)
+- `why-aarch64-linux` - Linux (ARM64)
 - `why-aarch64-darwin` - macOS (Apple Silicon)
 - `why-x86_64-darwin` - macOS (Intel)
 
+**CLI-only (no model, ~5MB):**
+- `why-cli-x86_64-linux` - Linux (x86_64)
+- `why-cli-aarch64-linux` - Linux (ARM64)
+- `why-cli-aarch64-darwin` - macOS (Apple Silicon)
+- `why-cli-x86_64-darwin` - macOS (Intel)
+
+The CLI-only build requires either a local model file (`--model`) or an external provider (`--provider`).
+
 ```bash
-# Example for Linux x86_64
+# Example for Linux x86_64 (embedded)
 curl -L -o why https://github.com/jamesbrink/why/releases/latest/download/why-x86_64-linux
 chmod +x why
 sudo mv why /usr/local/bin/
+
+# Example for CLI-only build with external provider
+curl -L -o why https://github.com/jamesbrink/why/releases/latest/download/why-cli-x86_64-linux
+chmod +x why
+export ANTHROPIC_API_KEY="your-key"
+./why --provider anthropic "error message"
 ```
 
 ### Build from Source
@@ -174,6 +195,11 @@ why --hook-install bash
 $ npm run build
 # (command fails)
 # why automatically explains what went wrong
+
+# Enable/disable hook without uninstalling
+why --enable    # Enable auto-explain
+why --disable   # Disable auto-explain
+why --status    # Show current hook status
 ```
 
 Wrap commands to capture and explain failures:
@@ -187,6 +213,71 @@ why --capture --confirm -- make test
 
 # Capture both stdout and stderr
 why --capture-all -- ./my-script.sh
+```
+
+## External Providers
+
+Need more brain power than a 0.5B model can muster? Phone a friend in the cloud:
+
+```bash
+# Set your API key (one of these)
+export ANTHROPIC_API_KEY="sk-ant-..."
+export OPENAI_API_KEY="sk-..."
+export OPENROUTER_API_KEY="sk-or-..."
+
+# Use a specific provider
+why --provider anthropic "segmentation fault"
+why --provider openai "null pointer exception"
+why --provider openrouter "memory leak"
+
+# List available providers
+why --list-providers
+
+# Override the model
+why --provider anthropic --model claude-haiku-4-20250514 "error"
+why --provider openai --model gpt-4o "complex error"
+```
+
+### Supported Providers
+
+| Provider | Env Variable | Default Model |
+| -------- | ------------ | ------------- |
+| `local` | - | Embedded Qwen2.5-Coder |
+| `anthropic` | `ANTHROPIC_API_KEY` | claude-sonnet-4-20250514 |
+| `openai` | `OPENAI_API_KEY` | gpt-4o-mini |
+| `openrouter` | `OPENROUTER_API_KEY` | anthropic/claude-sonnet-4 |
+
+### Environment Variables
+
+| Variable | Description |
+| -------- | ----------- |
+| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `OPENAI_API_KEY` | OpenAI API key |
+| `OPENROUTER_API_KEY` | OpenRouter API key |
+| `WHY_PROVIDER` | Override default provider |
+| `WHY_MODEL` | Override provider model |
+| `WHY_HOOK_DISABLE` | Disable shell hook (`1` to disable) |
+| `WHY_DEBUG` | Enable debug output |
+
+### Configuration File
+
+Create `~/.config/why/config.toml`:
+
+```toml
+[provider]
+default = "local"  # local | anthropic | openai | openrouter
+
+[provider.anthropic]
+model = "claude-sonnet-4-20250514"
+max_tokens = 1024
+
+[provider.openai]
+model = "gpt-4o-mini"
+max_tokens = 1024
+
+[provider.openrouter]
+model = "anthropic/claude-sonnet-4"
+max_tokens = 1024
 ```
 
 ## Daemon Mode
@@ -280,11 +371,11 @@ curl -L -o qwen2.5-coder-0.5b-instruct-q8_0.gguf \
 ## How It Works
 
 1. You give it an error message
-2. A tiny LLM (Qwen2.5-Coder 0.5B) thinks about it locally
+2. A tiny LLM (Qwen2.5-Coder 0.5B) thinks about it locally (or a cloud model if you're fancy)
 3. You get a summary, explanation, and suggestion
 4. You feel slightly less like throwing your laptop
 
-The model is embedded directly in the binary using a custom trailer format. On first run, it extracts to a temp file for inference. Subsequent runs skip extraction.
+The model is embedded directly in the binary using a custom trailer format. On first run, it extracts to a temp file for inference. Subsequent runs skip extraction. Or skip all that and just use `--provider anthropic` like someone with an API budget.
 
 ## License
 

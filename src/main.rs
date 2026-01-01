@@ -2038,6 +2038,57 @@ fn print_model_list() {
     println!();
 }
 
+fn print_provider_list() {
+    use why::providers::{get_api_key_env_var, list_providers};
+
+    println!("{}", "Available AI Providers".bold());
+    println!();
+    println!(
+        "  {:<15} {:<35} {}",
+        "Provider".blue().bold(),
+        "Description".blue().bold(),
+        "Status".blue().bold()
+    );
+    println!(
+        "  {:<15} {:<35} ─────────",
+        "───────────────", "───────────────────────────────────"
+    );
+
+    for (provider_type, description, available) in list_providers() {
+        let status = if available {
+            "Available".green().to_string()
+        } else {
+            let env_var = get_api_key_env_var(provider_type);
+            format!("Set {}", env_var).red().to_string()
+        };
+        println!("  {:<15} {:<35} {}", provider_type, description, status);
+    }
+
+    println!();
+    println!("{}", "Usage".bold());
+    println!();
+    println!("  Use {} to select a provider:", "--provider <name>".cyan());
+    println!(
+        "    {} --provider anthropic \"segmentation fault\"",
+        "why".green()
+    );
+    println!();
+    println!(
+        "  Or set {} in your config or environment:",
+        "WHY_PROVIDER".cyan()
+    );
+    println!("    export WHY_PROVIDER=anthropic");
+    println!();
+    println!("{}", "Environment Variables".bold());
+    println!();
+    println!("  {:<25} Anthropic API key", "ANTHROPIC_API_KEY".blue());
+    println!("  {:<25} OpenAI API key", "OPENAI_API_KEY".blue());
+    println!("  {:<25} OpenRouter API key", "OPENROUTER_API_KEY".blue());
+    println!("  {:<25} Override default provider", "WHY_PROVIDER".blue());
+    println!("  {:<25} Override model for provider", "WHY_MODEL".blue());
+    println!();
+}
+
 fn main() -> Result<()> {
     // Suppress verbose llama.cpp logs immediately
     send_logs_to_tracing(LogOptions::default().with_logs_enabled(false));
@@ -2062,6 +2113,12 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Handle --list-providers
+    if cli.list_providers {
+        print_provider_list();
+        return Ok(());
+    }
+
     // Handle --hook-config
     if cli.hook_config {
         print_hook_config();
@@ -2076,6 +2133,22 @@ fn main() -> Result<()> {
     // Handle --hook-uninstall
     if let Some(shell) = cli.hook_uninstall {
         return uninstall_hook(shell);
+    }
+
+    // Handle --enable
+    if cli.enable {
+        return why::hooks::enable_hook();
+    }
+
+    // Handle --disable
+    if cli.disable {
+        return why::hooks::disable_hook();
+    }
+
+    // Handle --status
+    if cli.status {
+        why::hooks::print_hook_status();
+        return Ok(());
     }
 
     // Handle --watch mode
@@ -2093,8 +2166,10 @@ fn main() -> Result<()> {
     let mut config = Config::load();
     config.apply_env_overrides();
 
-    // Check if hook is disabled via environment variable
-    if Config::is_hook_disabled() && (cli.capture || cli.exit_code.is_some()) {
+    // Check if hook is disabled via environment variable or state file
+    if (Config::is_hook_disabled() || !why::hooks::is_hook_enabled())
+        && (cli.capture || cli.exit_code.is_some())
+    {
         // Hook mode is disabled, just pass through
         return Ok(());
     }
