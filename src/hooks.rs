@@ -183,47 +183,118 @@ pub fn get_shell_config_path(shell: Shell) -> Option<PathBuf> {
 pub fn generate_hook_script(shell: Shell) -> &'static str {
     match shell {
         Shell::Bash => {
-            r#"__why_prompt_command() {
-    local exit_code=$?
-    if [[ $exit_code -ne 0 && $exit_code -ne 130 ]]; then
-        why --exit-code "$exit_code" --last-command "$BASH_COMMAND" 2>/dev/null
-    fi
+            r#"# why shell hook - captures command output for error explanation
+__why_stderr_file="/tmp/why_stderr_$$"
+__why_last_cmd=""
+
+# Capture stderr while still displaying it
+exec 2> >(tee -a "$__why_stderr_file" >&2)
+
+__why_preexec() {
+    __why_last_cmd="$1"
+    # Clear stderr capture file before each command
+    : > "$__why_stderr_file" 2>/dev/null
 }
+
+__why_prompt_command() {
+    local exit_code=$?
+    if [[ $exit_code -ne 0 && $exit_code -ne 130 && -n "$__why_last_cmd" ]]; then
+        local output=""
+        if [[ -f "$__why_stderr_file" && -s "$__why_stderr_file" ]]; then
+            output=$(tail -100 "$__why_stderr_file" 2>/dev/null)
+        fi
+        if [[ -n "$output" ]]; then
+            why --exit-code "$exit_code" --last-command "$__why_last_cmd" --last-output "$output" 2>/dev/null
+        else
+            why --exit-code "$exit_code" --last-command "$__why_last_cmd" 2>/dev/null
+        fi
+    fi
+    __why_last_cmd=""
+}
+
+trap '__why_preexec "$BASH_COMMAND"' DEBUG
 PROMPT_COMMAND="__why_prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+
+# Cleanup on exit
+trap 'rm -f "$__why_stderr_file" 2>/dev/null' EXIT
 "#
         }
         Shell::Zsh => {
-            r#"__why_precmd() {
-    local exit_code=$?
-    if [[ $exit_code -ne 0 && $exit_code -ne 130 ]]; then
-        why --exit-code "$exit_code" --last-command "$__why_last_cmd" 2>/dev/null
-    fi
-}
+            r#"# why shell hook - captures command output for error explanation
+__why_stderr_file="/tmp/why_stderr_$$"
+__why_last_cmd=""
+
+# Capture stderr while still displaying it
+exec 2> >(tee -a "$__why_stderr_file" >&2)
+
 __why_preexec() {
     __why_last_cmd="$1"
+    # Clear stderr capture file before each command
+    : > "$__why_stderr_file" 2>/dev/null
 }
+
+__why_precmd() {
+    local exit_code=$?
+    if [[ $exit_code -ne 0 && $exit_code -ne 130 && -n "$__why_last_cmd" ]]; then
+        local output=""
+        if [[ -f "$__why_stderr_file" && -s "$__why_stderr_file" ]]; then
+            output=$(tail -100 "$__why_stderr_file" 2>/dev/null)
+        fi
+        if [[ -n "$output" ]]; then
+            why --exit-code "$exit_code" --last-command "$__why_last_cmd" --last-output "$output" 2>/dev/null
+        else
+            why --exit-code "$exit_code" --last-command "$__why_last_cmd" 2>/dev/null
+        fi
+    fi
+    __why_last_cmd=""
+}
+
 autoload -Uz add-zsh-hook
-add-zsh-hook precmd __why_precmd
 add-zsh-hook preexec __why_preexec
+add-zsh-hook precmd __why_precmd
+
+# Cleanup on exit
+trap 'rm -f "$__why_stderr_file" 2>/dev/null' EXIT
 "#
         }
         Shell::Fish => {
-            r#"function __why_postexec --on-event fish_postexec
+            r#"# why shell hook - captures command output for error explanation
+set -g __why_stderr_file "/tmp/why_stderr_"(echo %self)
+
+function __why_preexec --on-event fish_preexec
+    # Clear stderr capture file before each command
+    echo -n > $__why_stderr_file 2>/dev/null
+end
+
+function __why_postexec --on-event fish_postexec
     set -l exit_code $status
     if test $exit_code -ne 0 -a $exit_code -ne 130
-        why --exit-code $exit_code --last-command "$argv" 2>/dev/null
+        set -l output ""
+        if test -f $__why_stderr_file -a -s $__why_stderr_file
+            set output (tail -100 $__why_stderr_file 2>/dev/null | string collect)
+        end
+        if test -n "$output"
+            why --exit-code $exit_code --last-command "$argv" --last-output "$output" 2>/dev/null
+        else
+            why --exit-code $exit_code --last-command "$argv" 2>/dev/null
+        end
     end
+end
+
+# Cleanup on exit
+function __why_cleanup --on-event fish_exit
+    rm -f $__why_stderr_file 2>/dev/null
 end
 "#
         }
         Shell::PowerShell => {
-            r#"function global:__why_prompt {
+            r#"# why shell hook (PowerShell integration is limited)
+function global:__why_prompt {
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0 -and $exitCode -ne 130) {
         why --exit-code $exitCode --last-command $MyInvocation.MyCommand 2>$null
     }
 }
-# Note: PowerShell hook integration is limited
 "#
         }
         _ => "",

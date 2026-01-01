@@ -1929,14 +1929,36 @@ fn print_bash_hook() {
 # Add this to your ~/.bashrc:
 #   eval "$(why --hook bash)"
 
+__why_stderr_file="/tmp/why_stderr_$$"
+__why_last_cmd=""
+
+# Capture stderr while still displaying it
+exec 2> >(tee -a "$__why_stderr_file" >&2)
+
+__why_preexec() {{
+    __why_last_cmd="$1"
+    # Clear stderr capture file before each command
+    : > "$__why_stderr_file" 2>/dev/null
+}}
+
 __why_prompt_command() {{
     local exit_code=$?
-    if [[ $exit_code -ne 0 && $exit_code -ne 130 ]]; then
-        # 130 = Ctrl+C, don't explain
-        why --exit-code $exit_code --last-command "$(fc -ln -1 2>/dev/null | sed 's/^[[:space:]]*//')"
+    if [[ $exit_code -ne 0 && $exit_code -ne 130 && -n "$__why_last_cmd" ]]; then
+        local output=""
+        if [[ -f "$__why_stderr_file" && -s "$__why_stderr_file" ]]; then
+            output=$(tail -100 "$__why_stderr_file" 2>/dev/null)
+        fi
+        if [[ -n "$output" ]]; then
+            why --exit-code "$exit_code" --last-command "$__why_last_cmd" --last-output "$output" 2>/dev/null
+        else
+            why --exit-code "$exit_code" --last-command "$__why_last_cmd" 2>/dev/null
+        fi
     fi
+    __why_last_cmd=""
     return $exit_code
 }}
+
+trap '__why_preexec "$BASH_COMMAND"' DEBUG
 
 # Preserve existing PROMPT_COMMAND
 if [[ -z "$PROMPT_COMMAND" ]]; then
@@ -1944,6 +1966,9 @@ if [[ -z "$PROMPT_COMMAND" ]]; then
 else
     PROMPT_COMMAND="__why_prompt_command; $PROMPT_COMMAND"
 fi
+
+# Cleanup on exit
+trap 'rm -f "$__why_stderr_file" 2>/dev/null' EXIT
 "#
     );
 }
@@ -1954,18 +1979,41 @@ fn print_zsh_hook() {
 # Add this to your ~/.zshrc:
 #   eval "$(why --hook zsh)"
 
+__why_stderr_file="/tmp/why_stderr_$$"
+__why_last_cmd=""
+
+# Capture stderr while still displaying it
+exec 2> >(tee -a "$__why_stderr_file" >&2)
+
+__why_preexec() {{
+    __why_last_cmd="$1"
+    # Clear stderr capture file before each command
+    : > "$__why_stderr_file" 2>/dev/null
+}}
+
 __why_precmd() {{
     local exit_code=$?
-    if [[ $exit_code -ne 0 && $exit_code -ne 130 ]]; then
-        # 130 = Ctrl+C, don't explain
-        why --exit-code $exit_code --last-command "${{history[$HISTCMD]}}"
+    if [[ $exit_code -ne 0 && $exit_code -ne 130 && -n "$__why_last_cmd" ]]; then
+        local output=""
+        if [[ -f "$__why_stderr_file" && -s "$__why_stderr_file" ]]; then
+            output=$(tail -100 "$__why_stderr_file" 2>/dev/null)
+        fi
+        if [[ -n "$output" ]]; then
+            why --exit-code "$exit_code" --last-command "$__why_last_cmd" --last-output "$output" 2>/dev/null
+        else
+            why --exit-code "$exit_code" --last-command "$__why_last_cmd" 2>/dev/null
+        fi
     fi
+    __why_last_cmd=""
     return $exit_code
 }}
 
-# Add to precmd hooks
 autoload -Uz add-zsh-hook
+add-zsh-hook preexec __why_preexec
 add-zsh-hook precmd __why_precmd
+
+# Cleanup on exit
+trap 'rm -f "$__why_stderr_file" 2>/dev/null' EXIT
 "#
     );
 }
@@ -1976,12 +2024,31 @@ fn print_fish_hook() {
 # Add this to your ~/.config/fish/config.fish:
 #   why --hook fish | source
 
-function __why_prompt --on-event fish_prompt
+set -g __why_stderr_file "/tmp/why_stderr_"(echo %self)
+
+function __why_preexec --on-event fish_preexec
+    # Clear stderr capture file before each command
+    echo -n > $__why_stderr_file 2>/dev/null
+end
+
+function __why_postexec --on-event fish_postexec
     set -l exit_code $status
     if test $exit_code -ne 0 -a $exit_code -ne 130
-        # 130 = Ctrl+C, don't explain
-        why --exit-code $exit_code --last-command "$history[1]"
+        set -l output ""
+        if test -f $__why_stderr_file -a -s $__why_stderr_file
+            set output (tail -100 $__why_stderr_file 2>/dev/null | string collect)
+        end
+        if test -n "$output"
+            why --exit-code $exit_code --last-command "$argv" --last-output "$output" 2>/dev/null
+        else
+            why --exit-code $exit_code --last-command "$argv" 2>/dev/null
+        end
     end
+end
+
+# Cleanup on exit
+function __why_cleanup --on-event fish_exit
+    rm -f $__why_stderr_file 2>/dev/null
 end
 "#
     );
@@ -2354,25 +2421,55 @@ fn main() -> Result<()> {
     let input = if let (Some(exit_code), Some(ref command)) = (cli.exit_code, &cli.last_command) {
         // Hook mode: build enhanced prompt with command context
         let interpretation = interpret_exit_code(exit_code);
-        format!(
-            "Command: {}\nExit code: {} ({})\n\nExplain why this command failed.",
-            command.trim(),
-            exit_code,
-            interpretation
-        )
+
+        if let Some(ref output) = cli.last_output {
+            // Full context: command + output + exit code
+            format!(
+                "Command: {}\nExit code: {} ({})\n\nOutput:\n{}\n\nExplain why this command failed.",
+                command.trim(),
+                exit_code,
+                interpretation,
+                output.trim()
+            )
+        } else {
+            // Basic context: just command + exit code
+            format!(
+                "Command: {}\nExit code: {} ({})\n\nExplain why this command failed.",
+                command.trim(),
+                exit_code,
+                interpretation
+            )
+        }
     } else if cli.exit_code.is_some() || cli.last_command.is_some() {
         // Partial hook mode - try to use what we have
         if let Some(exit_code) = cli.exit_code {
             let interpretation = interpret_exit_code(exit_code);
-            format!(
-                "Exit code: {} ({})\n\nExplain what this exit code means.",
-                exit_code, interpretation
-            )
+            if let Some(ref output) = cli.last_output {
+                format!(
+                    "Exit code: {} ({})\n\nOutput:\n{}\n\nExplain this error.",
+                    exit_code,
+                    interpretation,
+                    output.trim()
+                )
+            } else {
+                format!(
+                    "Exit code: {} ({})\n\nExplain what this exit code means.",
+                    exit_code, interpretation
+                )
+            }
         } else if let Some(ref command) = cli.last_command {
-            format!(
-                "Command failed: {}\n\nExplain why this might have failed.",
-                command.trim()
-            )
+            if let Some(ref output) = cli.last_output {
+                format!(
+                    "Command failed: {}\n\nOutput:\n{}\n\nExplain why this failed.",
+                    command.trim(),
+                    output.trim()
+                )
+            } else {
+                format!(
+                    "Command failed: {}\n\nExplain why this might have failed.",
+                    command.trim()
+                )
+            }
         } else {
             get_input(&cli)?
         }

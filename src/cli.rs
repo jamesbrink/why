@@ -82,6 +82,10 @@ pub struct Cli {
     #[arg(long, value_name = "CMD")]
     pub last_command: Option<String>,
 
+    /// The stderr/output from the failed command (used by shell hooks)
+    #[arg(long, value_name = "OUTPUT")]
+    pub last_output: Option<String>,
+
     /// Enable source context injection (read source files referenced in stack traces)
     #[arg(long, short = 'c')]
     pub context: bool,
