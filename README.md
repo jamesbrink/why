@@ -359,6 +359,29 @@ cargo clippy             # Lint
 cargo tarpaulin          # Coverage report
 ```
 
+### Local Testing
+
+After building with `nix build`, test the binary without installing:
+
+```bash
+# Test the binary
+./result/bin/why "segmentation fault"
+
+# Source completions for your current shell (zsh)
+source <(./result/bin/why --completions zsh)
+
+# Source shell hook for local testing (rewrites 'why' to use local binary)
+source <(./result/bin/why --hook zsh | sed 's|why --exit|'$(pwd)'/result/bin/why --exit|')
+
+# Same for bash
+source <(./result/bin/why --completions bash)
+source <(./result/bin/why --hook bash | sed 's|why --exit|'$(pwd)'/result/bin/why --exit|')
+
+# Now failed commands will auto-explain using your local build
+$ cat /nonexistent
+# (fails, why explains it)
+```
+
 ### Manual Model Download
 
 The `build` command auto-downloads the model, but you can also download it manually:
