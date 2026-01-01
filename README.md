@@ -182,24 +182,48 @@ why --completions fish > ~/.config/fish/completions/why.fish
 
 Make your shell explain failures automatically. No more copy-pasting error messages like a peasant.
 
+**Important:** The hook is disabled by default. You must run `why --enable` after installation.
+
 ```bash
-# Generate hook for your shell
-why --hook bash >> ~/.bashrc
-why --hook zsh >> ~/.zshrc
+# Step 1: Install the hook for your shell
+why --hook-install bash   # or zsh, fish
+
+# Step 2: Reload your shell config
+source ~/.bashrc          # or ~/.zshrc
+
+# Step 3: Enable the hook (required!)
+why --enable
+
+# Now when commands fail, why explains them automatically
+$ gcc nonexistent.c
+# gcc: error: nonexistent.c: No such file or directory
+# [why automatically explains the error]
+```
+
+### Hook Management
+
+```bash
+why --enable     # Enable auto-explain (required after install)
+why --disable    # Disable auto-explain
+why --status     # Show current hook status
+
+# Or use environment variables
+export WHY_HOOK_ENABLE=1   # Enable for this session
+export WHY_HOOK_DISABLE=1  # Disable for this session
+```
+
+### Manual Hook Installation
+
+If you prefer to add the hook manually:
+
+```bash
+# Add to your shell config
+echo 'eval "$(why --hook bash)"' >> ~/.bashrc
+echo 'eval "$(why --hook zsh)"' >> ~/.zshrc
 why --hook fish >> ~/.config/fish/config.fish
 
-# Or install directly
-why --hook-install bash
-
-# Now when commands fail, why explains them
-$ npm run build
-# (command fails)
-# why automatically explains what went wrong
-
-# Enable/disable hook without uninstalling
-why --enable    # Enable auto-explain
-why --disable   # Disable auto-explain
-why --status    # Show current hook status
+# Then enable it
+why --enable
 ```
 
 Wrap commands to capture and explain failures:
@@ -256,7 +280,8 @@ why --provider openai --model gpt-4o "complex error"
 | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `WHY_PROVIDER` | Override default provider |
 | `WHY_MODEL` | Override provider model |
-| `WHY_HOOK_DISABLE` | Disable shell hook (`1` to disable) |
+| `WHY_HOOK_ENABLE` | Enable shell hook for session (`1` to enable) |
+| `WHY_HOOK_DISABLE` | Disable shell hook for session (`1` to disable) |
 | `WHY_DEBUG` | Enable debug output |
 
 ### Configuration File

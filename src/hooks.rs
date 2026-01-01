@@ -22,7 +22,15 @@ fn get_hook_state_path() -> Option<PathBuf> {
 
 /// Check if hooks are enabled
 pub fn is_hook_enabled() -> bool {
-    // Environment variable takes precedence
+    // Environment variable WHY_HOOK_ENABLE=1 takes precedence
+    if std::env::var("WHY_HOOK_ENABLE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    // Environment variable WHY_HOOK_DISABLE=1 also takes precedence
     if std::env::var("WHY_HOOK_DISABLE")
         .map(|v| v == "1")
         .unwrap_or(false)
@@ -30,17 +38,17 @@ pub fn is_hook_enabled() -> bool {
         return false;
     }
 
-    // Check state file (default: enabled)
+    // Check state file (default: disabled)
     if let Some(state_path) = get_hook_state_path() {
         if state_path.exists() {
             return std::fs::read_to_string(state_path)
-                .map(|s| s.trim() != "0")
-                .unwrap_or(true);
+                .map(|s| s.trim() == "1")
+                .unwrap_or(false);
         }
     }
 
-    // Default: enabled
-    true
+    // Default: disabled - user must run `why --enable` first
+    false
 }
 
 /// Enable hook functionality
@@ -184,8 +192,19 @@ pub fn generate_hook_script(shell: Shell) -> &'static str {
     match shell {
         Shell::Bash => {
             r#"# why shell hook - captures command output for error explanation
+# NOTE: Hook is disabled by default. Run `why --enable` to activate.
+
 __why_stderr_file="/tmp/why_stderr_$$"
 __why_last_cmd=""
+__why_state_file="${XDG_STATE_HOME:-$HOME/.local/state}/why/hook_enabled"
+
+# Check if hook is enabled
+__why_is_enabled() {
+    [[ "$WHY_HOOK_ENABLE" == "1" ]] && return 0
+    [[ "$WHY_HOOK_DISABLE" == "1" ]] && return 1
+    [[ -f "$__why_state_file" ]] && [[ "$(cat "$__why_state_file" 2>/dev/null)" == "1" ]] && return 0
+    return 1
+}
 
 # Capture stderr while still displaying it
 exec 2> >(tee -a "$__why_stderr_file" >&2)
@@ -198,7 +217,7 @@ __why_preexec() {
 
 __why_prompt_command() {
     local exit_code=$?
-    if [[ $exit_code -ne 0 && $exit_code -ne 130 && -n "$__why_last_cmd" ]]; then
+    if __why_is_enabled && [[ $exit_code -ne 0 && $exit_code -ne 130 && -n "$__why_last_cmd" ]]; then
         local output=""
         if [[ -f "$__why_stderr_file" && -s "$__why_stderr_file" ]]; then
             output=$(tail -100 "$__why_stderr_file" 2>/dev/null)
@@ -221,8 +240,19 @@ trap 'rm -f "$__why_stderr_file" 2>/dev/null' EXIT
         }
         Shell::Zsh => {
             r#"# why shell hook - captures command output for error explanation
+# NOTE: Hook is disabled by default. Run `why --enable` to activate.
+
 __why_stderr_file="/tmp/why_stderr_$$"
 __why_last_cmd=""
+__why_state_file="${XDG_STATE_HOME:-$HOME/.local/state}/why/hook_enabled"
+
+# Check if hook is enabled
+__why_is_enabled() {
+    [[ "$WHY_HOOK_ENABLE" == "1" ]] && return 0
+    [[ "$WHY_HOOK_DISABLE" == "1" ]] && return 1
+    [[ -f "$__why_state_file" ]] && [[ "$(cat "$__why_state_file" 2>/dev/null)" == "1" ]] && return 0
+    return 1
+}
 
 # Capture stderr while still displaying it
 exec 2> >(tee -a "$__why_stderr_file" >&2)
@@ -235,7 +265,7 @@ __why_preexec() {
 
 __why_precmd() {
     local exit_code=$?
-    if [[ $exit_code -ne 0 && $exit_code -ne 130 && -n "$__why_last_cmd" ]]; then
+    if __why_is_enabled && [[ $exit_code -ne 0 && $exit_code -ne 130 && -n "$__why_last_cmd" ]]; then
         local output=""
         if [[ -f "$__why_stderr_file" && -s "$__why_stderr_file" ]]; then
             output=$(tail -100 "$__why_stderr_file" 2>/dev/null)
@@ -259,7 +289,21 @@ trap 'rm -f "$__why_stderr_file" 2>/dev/null' EXIT
         }
         Shell::Fish => {
             r#"# why shell hook - captures command output for error explanation
+# NOTE: Hook is disabled by default. Run `why --enable` to activate.
+
 set -g __why_stderr_file "/tmp/why_stderr_"(echo %self)
+set -g __why_state_file "$HOME/.local/state/why/hook_enabled"
+if set -q XDG_STATE_HOME
+    set __why_state_file "$XDG_STATE_HOME/why/hook_enabled"
+end
+
+# Check if hook is enabled
+function __why_is_enabled
+    test "$WHY_HOOK_ENABLE" = "1"; and return 0
+    test "$WHY_HOOK_DISABLE" = "1"; and return 1
+    test -f $__why_state_file; and test (cat $__why_state_file 2>/dev/null) = "1"; and return 0
+    return 1
+end
 
 function __why_preexec --on-event fish_preexec
     # Clear stderr capture file before each command
@@ -268,7 +312,7 @@ end
 
 function __why_postexec --on-event fish_postexec
     set -l exit_code $status
-    if test $exit_code -ne 0 -a $exit_code -ne 130
+    if __why_is_enabled; and test $exit_code -ne 0 -a $exit_code -ne 130
         set -l output ""
         if test -f $__why_stderr_file -a -s $__why_stderr_file
             set output (tail -100 $__why_stderr_file 2>/dev/null | string collect)
@@ -289,10 +333,15 @@ end
         }
         Shell::PowerShell => {
             r#"# why shell hook (PowerShell integration is limited)
+# NOTE: Hook is disabled by default. Run `why --enable` to activate.
+
 function global:__why_prompt {
     $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0 -and $exitCode -ne 130) {
-        why --exit-code $exitCode --last-command $MyInvocation.MyCommand 2>$null
+    # Check if enabled (simplified - just checks env var)
+    if ($env:WHY_HOOK_ENABLE -eq "1" -or (Test-Path "$env:LOCALAPPDATA\why\hook_enabled" -and (Get-Content "$env:LOCALAPPDATA\why\hook_enabled") -eq "1")) {
+        if ($exitCode -ne 0 -and $exitCode -ne 130) {
+            why --exit-code $exitCode --last-command $MyInvocation.MyCommand 2>$null
+        }
     }
 }
 "#

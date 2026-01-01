@@ -1928,9 +1928,20 @@ fn print_bash_hook() {
         r#"# why - shell hook for bash
 # Add this to your ~/.bashrc:
 #   eval "$(why --hook bash)"
+#
+# NOTE: Hook is disabled by default. Run `why --enable` to activate.
 
 __why_stderr_file="/tmp/why_stderr_$$"
 __why_last_cmd=""
+__why_state_file="${{XDG_STATE_HOME:-$HOME/.local/state}}/why/hook_enabled"
+
+# Check if hook is enabled
+__why_is_enabled() {{
+    [[ "$WHY_HOOK_ENABLE" == "1" ]] && return 0
+    [[ "$WHY_HOOK_DISABLE" == "1" ]] && return 1
+    [[ -f "$__why_state_file" ]] && [[ "$(cat "$__why_state_file" 2>/dev/null)" == "1" ]] && return 0
+    return 1
+}}
 
 # Capture stderr while still displaying it
 exec 2> >(tee -a "$__why_stderr_file" >&2)
@@ -1943,7 +1954,7 @@ __why_preexec() {{
 
 __why_prompt_command() {{
     local exit_code=$?
-    if [[ $exit_code -ne 0 && $exit_code -ne 130 && -n "$__why_last_cmd" ]]; then
+    if __why_is_enabled && [[ $exit_code -ne 0 && $exit_code -ne 130 && -n "$__why_last_cmd" ]]; then
         local output=""
         if [[ -f "$__why_stderr_file" && -s "$__why_stderr_file" ]]; then
             output=$(tail -100 "$__why_stderr_file" 2>/dev/null)
@@ -1978,9 +1989,20 @@ fn print_zsh_hook() {
         r#"# why - shell hook for zsh
 # Add this to your ~/.zshrc:
 #   eval "$(why --hook zsh)"
+#
+# NOTE: Hook is disabled by default. Run `why --enable` to activate.
 
 __why_stderr_file="/tmp/why_stderr_$$"
 __why_last_cmd=""
+__why_state_file="${{XDG_STATE_HOME:-$HOME/.local/state}}/why/hook_enabled"
+
+# Check if hook is enabled
+__why_is_enabled() {{
+    [[ "$WHY_HOOK_ENABLE" == "1" ]] && return 0
+    [[ "$WHY_HOOK_DISABLE" == "1" ]] && return 1
+    [[ -f "$__why_state_file" ]] && [[ "$(cat "$__why_state_file" 2>/dev/null)" == "1" ]] && return 0
+    return 1
+}}
 
 # Capture stderr while still displaying it
 exec 2> >(tee -a "$__why_stderr_file" >&2)
@@ -1993,7 +2015,7 @@ __why_preexec() {{
 
 __why_precmd() {{
     local exit_code=$?
-    if [[ $exit_code -ne 0 && $exit_code -ne 130 && -n "$__why_last_cmd" ]]; then
+    if __why_is_enabled && [[ $exit_code -ne 0 && $exit_code -ne 130 && -n "$__why_last_cmd" ]]; then
         local output=""
         if [[ -f "$__why_stderr_file" && -s "$__why_stderr_file" ]]; then
             output=$(tail -100 "$__why_stderr_file" 2>/dev/null)
@@ -2023,8 +2045,22 @@ fn print_fish_hook() {
         r#"# why - shell hook for fish
 # Add this to your ~/.config/fish/config.fish:
 #   why --hook fish | source
+#
+# NOTE: Hook is disabled by default. Run `why --enable` to activate.
 
 set -g __why_stderr_file "/tmp/why_stderr_"(echo %self)
+set -g __why_state_file "$HOME/.local/state/why/hook_enabled"
+if set -q XDG_STATE_HOME
+    set __why_state_file "$XDG_STATE_HOME/why/hook_enabled"
+end
+
+# Check if hook is enabled
+function __why_is_enabled
+    test "$WHY_HOOK_ENABLE" = "1"; and return 0
+    test "$WHY_HOOK_DISABLE" = "1"; and return 1
+    test -f $__why_state_file; and test (cat $__why_state_file 2>/dev/null) = "1"; and return 0
+    return 1
+end
 
 function __why_preexec --on-event fish_preexec
     # Clear stderr capture file before each command
@@ -2033,7 +2069,7 @@ end
 
 function __why_postexec --on-event fish_postexec
     set -l exit_code $status
-    if test $exit_code -ne 0 -a $exit_code -ne 130
+    if __why_is_enabled; and test $exit_code -ne 0 -a $exit_code -ne 130
         set -l output ""
         if test -f $__why_stderr_file -a -s $__why_stderr_file
             set output (tail -100 $__why_stderr_file 2>/dev/null | string collect)
